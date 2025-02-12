@@ -219,7 +219,18 @@ create_site() {
     
     # Laravel specific setup
     if [[ "$laravel" =~ ^[Yy] ]]; then
-        check_composer "$CURRENT_USER"
+        if ! command -v composer &>/dev/null; then
+            echo "Composer not found! Installing..."
+            php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+            sudo php composer-setup.php --install-dir=/usr/local/bin --filename=composer
+            rm composer-setup.php
+        fi
+
+        # Verify composer installation
+        if ! command -v composer &>/dev/null; then
+            echo "ERROR: Composer installation failed!"
+            exit 1
+        fi
         
         # Verify directory permissions
         sudo -u "$CURRENT_USER" touch "$full_path/permission_test" || {
