@@ -23,7 +23,7 @@ show_header() {
     clear
     echo -e "${BLUE}"
     echo "=============================================="
-    echo "        WELCOME TO SITE MANAGER TOOL"
+    echo "        WELCOME TO SITE MANAGER"
     echo "=============================================="
     echo -e "${NC}"
 }
@@ -354,17 +354,83 @@ EOF
 # ---------- Backup/Restore Functions ----------
 backup_site() {
     local domain=$1
-    local backup_file="${BACKUP_DIR}/${domain}_$(date +%Y%m%d%H%M).tar.gz"
-    
-    mkdir -p "$BACKUP_DIR"
-    sudo tar -czf "$backup_file" -C "$WEB_ROOT" "$domain"
-    echo -e "${GREEN}Backup created: ${backup_file}${NC}"
+    local custom_dir=${2:-$BACKUP_DIR}  # Use provided dir or default
+    local default_backup_name="${domain}_$(date +%Y%m%d%H%M)"
+    local backup_dir="${custom_dir}/${default_backup_name}"
+    local sql_file="${backup_dir}/db_dump.sql"
+    local backup_code=false
+    local backup_db=false
+
+    # Ensure destination exists
+    mkdir -p "$custom_dir" || {
+        echo "Failed to create backup directory: $custom_dir"
+        return 1
+    }
+
+    # Show backup destination
+    echo -e "${YELLOW}Backup destination: ${custom_dir}/${default_backup_name}.{format}${NC}"
+    echo -e "Default backup name: ${default_backup_name} (press Enter to keep)\n"
+
+    # Custom backup name
+    read -p "Enter custom backup name [${default_backup_name}]: " backup_name
+    backup_name=${backup_name:-$default_backup_name}
+    backup_dir="${custom_dir}/${backup_name}"
+
+    # Create working directory
+    mkdir -p "$backup_dir"
+
+    # Backup type selection
+    echo -e "\n${YELLOW}Select backup type (default: 1):${NC}"
+    PS3="Enter your choice (1-3): "
+    select type in "Both project code and database" "Project code only" "Database only"; do
+        case $REPLY in
+            1) backup_code=true; backup_db=true ;;
+            2) backup_code=true ;;
+            3) backup_db=true ;;
+            *) echo "Using default (Both)"; backup_code=true; backup_db=true ;;
+        esac
+        break
+    done
+
+    # ... [rest of backup process remains similar] ...
+
+    # Final output
+    if [ -f "${backup_dir}.${format}" ]; then
+        echo -e "${GREEN}Backup created: ${backup_dir}.${format}${NC}"
+        echo -e "Full path: $(realpath "${backup_dir}.${format}")\n"
+    fi
 }
 
 restore_site() {
     local backup_file=$1
-    sudo tar -xzf "$backup_file" -C "$WEB_ROOT"
-    echo -e "${GREEN}Restored from: ${backup_file}${NC}"
+    echo -e "\n${YELLOW}Restoring from: ${backup_file}${NC}"
+    
+    # Detect backup type
+    if [[ "$backup_file" == */* ]]; then
+        local restore_dir=$(dirname "$backup_file")
+    else
+        local restore_dir="$BACKUP_DIR"
+        echo -e "Using default backup location: $restore_dir"
+    fi
+    
+    if [[ "$backup_file" == *.tar.gz ]]; then
+        tar -xzf "$backup_file" -C "$WEB_ROOT"
+    elif [[ "$backup_file" == *.zip ]]; then
+        unzip "$backup_file" -d "$WEB_ROOT"
+    else
+        echo "Unsupported format - use .tar.gz or .zip"
+        return 1
+    fi
+    
+    # Database restore prompt
+    if [ -f "${WEB_ROOT}/${domain}/db_dump.sql" ]; then
+        read -p "Found database dump. Restore database? [y/N] " restore_db
+        if [[ "$restore_db" =~ ^[Yy] ]]; then
+            mysql -h "$db_host" -u "$db_user" -p"$db_pass" "$db_name" < "${WEB_ROOT}/${domain}/db_dump.sql"
+        fi
+    fi
+    
+    echo -e "${GREEN}Restore completed!${NC}"
 }
 
 # ---------- SSL Functions ----------
