@@ -21,6 +21,11 @@ sudo curl -L https://raw.githubusercontent.com/williamug/site-manager/main/site-
 sudo chmod +x /usr/local/bin/site-manager
 ```
 
+## Uninstallation
+```bash
+sudo rm /usr/local/bin/site-manager
+```
+
 ## Usage 
 
 ### Basic Commands
