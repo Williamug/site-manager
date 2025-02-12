@@ -23,7 +23,7 @@ show_header() {
     clear
     echo -e "${BLUE}"
     echo "=============================================="
-    echo "        SERVER & SITE MANAGEMENT SUITE"
+    echo "        WELCOME TO SITE MANAGER TOOL"
     echo "=============================================="
     echo -e "${NC}"
 }
@@ -56,6 +56,9 @@ check_tool() {
             node)
                 version=$(node -v 2>/dev/null)
                 ;;
+            npm)
+                version=$(npm -v 2>/dev/null)
+                ;;
             composer)
                 version=$(sudo -u $user -i composer --version 2>/dev/null | awk '{print $3}')
                 ;;
@@ -80,16 +83,17 @@ check_dependencies() {
     check_tool "php"
     check_tool "mysqld"
     check_tool "node"
+    check_tool "npm"
     check_tool "composer"
 }
 
 setup_server() {
     show_header
-    echo -e "${YELLOW}Initial Server Setup${NC}"
+    echo -e "${YELLOW}This Is The Initial Server Setup${NC}"
     
     # PHP Version Selection
     PS3="Select PHP version: "
-    select php_version in 8.3 8.2 8.1 7.4; do
+    select php_version in 8.4 8.3 8.2 8.1; do
         [ -n "$php_version" ] && break
         echo "Invalid selection!"
     done
@@ -131,19 +135,61 @@ setup_server() {
         sudo mysql_secure_installation
     fi
 
-    # Node.js
+    # Node.js and npm
     if ! command -v node &>/dev/null; then
-        echo "Installing Node.js..."
+        echo "Installing Node.js and npm..."
         curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
         sudo apt install -y nodejs
+        
+        # Verify npm installation
+        if ! command -v npm &>/dev/null; then
+            echo "Installing npm separately..."
+            sudo apt install -y npm
+        fi
     fi
 
-    # Composer
+    # Composer installation with shell detection
     if ! command -v composer &>/dev/null; then
         echo "Installing Composer..."
         php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
         sudo php composer-setup.php --install-dir=/usr/local/bin --filename=composer
         rm composer-setup.php
+
+        # Detect shell configuration
+        detect_shell_config() {
+            case $(basename "$SHELL") in
+                bash*)  echo "$HOME/.bashrc" ;;
+                zsh*)   echo "$HOME/.zshrc" ;;
+                fish*)  echo "$HOME/.config/fish/config.fish" ;;
+                *)      echo "$HOME/.profile" ;;
+            esac
+        }
+
+        config_file=$(detect_shell_config)
+        
+        # Verify PATH configuration
+        if ! echo "$PATH" | grep -q "/usr/local/bin"; then
+            echo -e "\n${YELLOW}Composer installed to /usr/local/bin which is not in your PATH${NC}"
+            echo "Detected shell configuration file: $config_file"
+            
+            read -p "Add /usr/local/bin to PATH? [Y/n] " response
+            if [[ ! "$response" =~ ^[Nn] ]]; then
+                read -p "Enter path to shell config file [$config_file]: " custom_file
+                config_file=${custom_file:-$config_file}
+                
+                echo "Adding to $config_file..."
+                echo -e "\n# Added by Site Manager\nexport PATH=\"\$PATH:/usr/local/bin\"" | tee -a "$config_file"
+                
+                # Load new PATH
+                if [ -f "$config_file" ]; then
+                    source "$config_file"
+                else
+                    echo "Could not source $config_file - please restart your shell"
+                fi
+            else
+                echo "You may need to add /usr/local/bin to your PATH manually"
+            fi
+        fi
     fi
 
     # Configure permissions
@@ -193,11 +239,11 @@ create_site() {
         document_root="${full_path}/public"
     else
         document_root="$full_path"
-        sudo touch "${document_root}/index.html"
+        sudo touch "${document_root}/index.php"
     fi
     
     setup_nginx "$domain" "$document_root"
-    echo -e "${GREEN}Site created: http://${domain}${NC}"
+    echo -e "${GREEN}Project created: http://${domain}${NC}"
 }
 
 delete_site() {
@@ -220,7 +266,7 @@ delete_site() {
     echo "• Hosts entry: $domain"
     echo "• Project files: $project_root"
     
-    read -p "Are you sure? [y/N] " confirm
+    read -p "Are you sure you want to do this? [y/N] " confirm
     [[ ! "$confirm" =~ ^[Yy] ]] && { echo "Deletion cancelled"; return; }
 
     # Remove configs
@@ -237,7 +283,8 @@ delete_site() {
     fi
 
     sudo systemctl reload nginx
-    echo -e "${GREEN}Site ${domain} removed!${NC}"
+    echo -e "${GREEN}Project ${domain} removed!${NC}"
+    echo -e "${GREEN}Project $project_root removed!${NC}"
 }
 
 move_project() {
@@ -350,12 +397,12 @@ case "$1" in
         while true; do
             show_header
             echo "Main Operations:"
-            echo "1) Create New Site"
-            echo "2) Delete Existing Site"
+            echo "1) Create New Project"
+            echo "2) Delete Existing Project"
             echo "3) Move Project"
             echo "4) Clone from GitHub"
-            echo "5) Backup Site"
-            echo "6) Restore Site"
+            echo "5) Backup Project"
+            echo "6) Restore Project"
             echo "7) Setup SSL"
             echo "8) Exit"
             read -p "Select operation [1-8]: " choice
