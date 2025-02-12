@@ -347,7 +347,7 @@ server {
     }
 
     location ~ \.php$ {
-        include snippets/fastcpi-php.conf;
+        include snippets/fastcgi-php.conf;
         fastcgi_pass unix:/run/php/php${php_version}-fpm.sock;
         include fastcgi_params;
     }
