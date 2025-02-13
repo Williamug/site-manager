@@ -218,29 +218,7 @@ create_site() {
     sudo chmod -R 775 "$full_path"
     
     # Laravel specific setup
-    if [[ "$laravel" =~ ^[Yy] ]]; then
-        if ! command -v composer &>/dev/null; then
-            echo "Composer not found! Installing..."
-            php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
-            sudo php composer-setup.php --install-dir=/usr/local/bin --filename=composer
-            rm composer-setup.php
-        fi
-
-        # Verify composer installation
-        if ! command -v composer &>/dev/null; then
-            echo "ERROR: Composer installation failed!"
-            exit 1
-        fi
-        
-        # Verify directory permissions
-        sudo -u "$CURRENT_USER" touch "$full_path/permission_test" || {
-            echo "ERROR: User $CURRENT_USER cannot write to $full_path"
-            exit 1
-        }
-        sudo -u "$CURRENT_USER" rm "$full_path/permission_test"
-
-        # Install Laravel project
-        if [ -z "$(ls -A "$full_path")" ]; then
+    if [ -z "$(ls -A "$full_path")" ]; then
         echo "Installing Laravel project..."
         sudo -u "$CURRENT_USER" -i bash -c \
             "cd '$full_path' && composer create-project --prefer-dist laravel/laravel ."
@@ -249,13 +227,26 @@ create_site() {
 
         # Add Laravel specific permissions
         echo -e "\n${YELLOW}Setting Laravel directory permissions...${NC}"
-        sudo chown -R www-data:www-data "$full_path/storage"
-        sudo chown -R www-data:www-data "$full_path/bootstrap/cache"
-        sudo find "$full_path/storage" -type d -exec chmod 775 {} \;
-        sudo find "$full_path/storage" -type f -exec chmod 664 {} \;
-        sudo find "$full_path/bootstrap/cache" -type d -exec chmod 775 {} \;
-        sudo chmod -R g+s "$full_path/storage"
-        sudo chmod -R g+s "$full_path/bootstrap/cache"
+        
+        # Create database directory if using SQLite
+        sudo -u "$CURRENT_USER" mkdir -p "$full_path/database"
+        
+        # Set permissions for critical directories
+        for dir in storage bootstrap/cache database; do
+            sudo chown -R www-data:www-data "$full_path/$dir"
+            sudo find "$full_path/$dir" -type d -exec chmod 775 {} \;
+            sudo find "$full_path/$dir" -type f -exec chmod 664 {} \;
+            sudo chmod -R g+s "$full_path/$dir"
+        done
+
+        # Create SQLite database file if needed
+        if [ -f "$full_path/.env" ] && grep -q "DB_CONNECTION=sqlite" "$full_path/.env"; then
+            echo "Configuring SQLite database..."
+            sudo -u "$CURRENT_USER" touch "$full_path/database/database.sqlite"
+            sudo chown www-data:www-data "$full_path/database/database.sqlite"
+            sudo chmod 664 "$full_path/database/database.sqlite"
+        fi
+
         echo -e "${GREEN}Laravel permissions configured!${NC}"
     fi
 
