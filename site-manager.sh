@@ -39,9 +39,10 @@ get_current_user() {
 check_tool() {
     local tool=$1
     local get_version=$2
-    local user=$(get_current_user)
+    local user
+    user=$(get_current_user)
     
-    if command -v $tool &>/dev/null; then
+    if command -v "$tool" &>/dev/null; then
         version=""
         case $tool in
             nginx)
@@ -60,7 +61,7 @@ check_tool() {
                 version=$(npm -v 2>/dev/null)
                 ;;
             composer)
-                version=$(sudo -u $user -i composer --version 2>/dev/null | awk '{print $3}')
+                version=$(sudo -u "$user" -i composer --version 2>/dev/null | awk '{print $3}')
                 ;;
         esac
         
@@ -94,7 +95,9 @@ setup_server() {
     # PHP Version Selection
     PS3="Select PHP version: "
     select php_version in 8.4 8.3 8.2 8.1; do
-        [ -n "$php_version" ] && break
+        if [ -n "$php_version" ]; then
+            break
+        fi
         echo "Invalid selection!"
     done
 
@@ -194,10 +197,10 @@ setup_server() {
 
     # Configure permissions
     echo "Configuring permissions..."
-    sudo mkdir -p $WEB_ROOT
-    sudo chown -R $USER:www-data $WEB_ROOT
-    sudo chmod -R 775 $WEB_ROOT
-    sudo usermod -aG www-data $USER
+    sudo mkdir -p "$WEB_ROOT"
+    sudo chown -R "$USER":www-data "$WEB_ROOT"
+    sudo chmod -R 775 "$WEB_ROOT"
+    sudo usermod -aG www-data "$USER"
     
     echo -e "\n${GREEN}Server setup complete!${NC}"
     echo "Note: You may need to log out and back in for group changes to take effect"
@@ -205,7 +208,8 @@ setup_server() {
 
 # ---------- Site Management Functions ----------
 create_site() {
-    local CURRENT_USER=$(get_current_user)
+    local CURRENT_USER
+    CURRENT_USER=$(get_current_user)
     read -p "Enter domain name (e.g., example.test): " domain
     read -p "Project path relative to ${WEB_ROOT}: " path
     read -p "Is this a Laravel project? [y/N]: " laravel
@@ -214,43 +218,44 @@ create_site() {
     
     # Create directory structure
     sudo mkdir -p "$full_path"
-    sudo chown -R $CURRENT_USER:www-data "$full_path"
+    sudo chown -R "$CURRENT_USER":www-data "$full_path"
     sudo chmod -R 775 "$full_path"
     
-    # Laravel specific setup
-    if [ -z "$(ls -A "$full_path")" ]; then
-        echo "Installing Laravel project..."
-        sudo -u "$CURRENT_USER" -i bash -c \
-            "cd '$full_path' && composer create-project --prefer-dist laravel/laravel ."
-        
-        [ $? -ne 0 ] && { echo "Laravel installation failed!"; exit 1; }
+    if [[ "$laravel" =~ ^[Yy]$ ]]; then
+        if [ -z "$(ls -A "$full_path")" ]; then
+            echo "Installing Laravel project..."
+            sudo -u "$CURRENT_USER" -i bash -c "cd '$full_path' && composer create-project --prefer-dist laravel/laravel ."
+            
+            if [ $? -ne 0 ]; then
+                echo "Laravel installation failed!"
+                exit 1
+            fi
 
-        # Add Laravel specific permissions
-        echo -e "\n${YELLOW}Setting Laravel directory permissions...${NC}"
-        
-        # Create database directory if using SQLite
-        sudo -u "$CURRENT_USER" mkdir -p "$full_path/database"
-        
-        # Set permissions for critical directories
-        for dir in storage bootstrap/cache database; do
-            sudo chown -R www-data:www-data "$full_path/$dir"
-            sudo find "$full_path/$dir" -type d -exec chmod 775 {} \;
-            sudo find "$full_path/$dir" -type f -exec chmod 664 {} \;
-            sudo chmod -R g+s "$full_path/$dir"
-        done
+            # Add Laravel specific permissions
+            echo -e "\n${YELLOW}Setting Laravel directory permissions...${NC}"
+            
+            # Create database directory if using SQLite
+            sudo -u "$CURRENT_USER" mkdir -p "$full_path/database"
+            
+            # Set permissions for critical directories
+            for dir in storage bootstrap/cache database; do
+                sudo chown -R www-data:www-data "$full_path/$dir"
+                sudo find "$full_path/$dir" -type d -exec chmod 775 {} \;
+                sudo find "$full_path/$dir" -type f -exec chmod 664 {} \;
+                sudo chmod -R g+s "$full_path/$dir"
+            done
 
-        # Create SQLite database file if needed
-        if [ -f "$full_path/.env" ] && grep -q "DB_CONNECTION=sqlite" "$full_path/.env"; then
-            echo "Configuring SQLite database..."
-            sudo -u "$CURRENT_USER" touch "$full_path/database/database.sqlite"
-            sudo chown www-data:www-data "$full_path/database/database.sqlite"
-            sudo chmod 664 "$full_path/database/database.sqlite"
+            # Create SQLite database file if needed
+            # NOTE: If the .env file has DB_CONNECTION=sqlite (even if commented), we leave the commented-out DB_* variables intact.
+            if [ -f "$full_path/.env" ] && grep -E "^[[:space:]]*#?[[:space:]]*DB_CONNECTION=sqlite" "$full_path/.env" > /dev/null; then
+                echo "Configuring SQLite database..."
+                sudo -u "$CURRENT_USER" touch "$full_path/database/database.sqlite"
+                sudo chown www-data:www-data "$full_path/database/database.sqlite"
+                sudo chmod 664 "$full_path/database/database.sqlite"
+            fi
+
         fi
-
-        echo -e "${GREEN}Laravel permissions configured!${NC}"
-    fi
-
-    document_root="${full_path}/public"
+        document_root="${full_path}/public"
     else
         document_root="$full_path"
         sudo touch "${document_root}/index.php"
@@ -262,7 +267,6 @@ create_site() {
 
 delete_site() {
     local domain delete_files project_root document_root
-    
     read -p "Enter domain to delete: " domain
     local config_file="${NGINX_DIR}/sites-available/${domain}"
     
@@ -273,7 +277,11 @@ delete_site() {
     
     # Get document root from config
     document_root=$(grep -m1 "root " "$config_file" | awk '{print $2}' | tr -d ';')
-    [[ "$document_root" == *"/public" ]] && project_root=$(dirname "$document_root") || project_root="$document_root"
+    if [[ "$document_root" == *"/public" ]]; then
+        project_root=$(dirname "$document_root")
+    else
+        project_root="$document_root"
+    fi
 
     echo -e "\n${RED}WARNING: This will permanently delete:${NC}"
     echo "• Domain configuration: $config_file"
@@ -281,7 +289,10 @@ delete_site() {
     echo "• Project files: $project_root"
     
     read -p "Are you sure you want to do this? [y/N] " confirm
-    [[ ! "$confirm" =~ ^[Yy] ]] && { echo "Deletion cancelled"; return; }
+    if [[ ! "$confirm" =~ ^[Yy] ]]; then
+        echo "Deletion cancelled"
+        return
+    fi
 
     # Remove configs
     sudo rm -f "$config_file"
@@ -298,11 +309,11 @@ delete_site() {
 
     sudo systemctl reload nginx
     echo -e "${GREEN}Project ${domain} removed!${NC}"
-    echo -e "${GREEN}Project $project_root removed!${NC}"
 }
 
 move_project() {
-    local CURRENT_USER=$(get_current_user)
+    local CURRENT_USER
+    CURRENT_USER=$(get_current_user)
     read -p "Enter full path to project: " source_path
     read -p "Enter domain name: " domain
     
@@ -310,13 +321,14 @@ move_project() {
     target_path="${WEB_ROOT}/${project_name}"
     
     sudo rsync -a "$source_path/" "$target_path/"
-    sudo chown -R $CURRENT_USER:www-data "$target_path"
+    sudo chown -R "$CURRENT_USER":www-data "$target_path"
     setup_nginx "$domain" "$target_path"
     echo -e "${GREEN}Project moved to: ${target_path}${NC}"
 }
 
 clone_project() {
-    local CURRENT_USER=$(get_current_user)
+    local CURRENT_USER
+    CURRENT_USER=$(get_current_user)
     read -p "Git repository URL: " repo_url
     read -p "Enter domain name: " domain
     
@@ -325,7 +337,7 @@ clone_project() {
     
     # Create directory with proper permissions
     sudo mkdir -p "$target_path"
-    sudo chown -R "$CURRENT_USER:www-data" "$target_path"
+    sudo chown -R "$CURRENT_USER":www-data "$target_path"
     sudo chmod -R 775 "$target_path"
     
     # Clone repository
@@ -351,7 +363,7 @@ server {
 
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/run/php/php${php_version}-fpm.sock;
+        fastcgi_pass unix:/run/php/php\${php_version}-fpm.sock;
         include fastcgi_params;
     }
 
@@ -408,10 +420,10 @@ backup_site() {
 
     # ... [rest of backup process remains similar] ...
 
-    # Final output
-    if [ -f "${backup_dir}.${format}" ]; then
-        echo -e "${GREEN}Backup created: ${backup_dir}.${format}${NC}"
-        echo -e "Full path: $(realpath "${backup_dir}.${format}")\n"
+    # Final output (assuming a file was created)
+    if [ -f "${backup_dir}.tar.gz" ]; then
+        echo -e "${GREEN}Backup created: ${backup_dir}.tar.gz${NC}"
+        echo -e "Full path: $(realpath "${backup_dir}.tar.gz")\n"
     fi
 }
 
@@ -421,7 +433,8 @@ restore_site() {
     
     # Detect backup type
     if [[ "$backup_file" == */* ]]; then
-        local restore_dir=$(dirname "$backup_file")
+        local restore_dir
+        restore_dir=$(dirname "$backup_file")
     else
         local restore_dir="$BACKUP_DIR"
         echo -e "Using default backup location: $restore_dir"
