@@ -104,13 +104,15 @@ setup_server() {
     show_header
     echo -e "${YELLOW}This Is The Initial Server Setup${NC}"
     
-    # PHP Version Selection
-    PS3="Select PHP version: "
-    select php_version in 8.4 8.3 8.2 8.1; do
-        if [ -n "$php_version" ]; then
+    # PHP Version Selection using select (enter the option number)
+    PS3="Select PHP version (enter the option number): "
+    select chosen in 8.4 8.3 8.2 8.1; do
+        if [ -n "$chosen" ]; then
+            php_version="$chosen"
             break
+        else
+            echo "Invalid selection! Please enter the number corresponding to the PHP version."
         fi
-        echo "Invalid selection!"
     done
 
     # Install components
