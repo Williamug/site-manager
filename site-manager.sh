@@ -10,6 +10,7 @@ CONFIG_DIR="/etc/site-manager"
 LOG_DIR="/var/log/site-manager"
 BACKUP_DIR="/var/backups/sites"
 PHP_SOCKET="/run/php/php@VERSION@-fpm.sock"
+DEFAULT_PHP_VERSION="8.1"  # Default PHP version if not explicitly set
 
 # Colors
 RED='\033[0;31m'
@@ -245,8 +246,9 @@ create_site() {
                 sudo chmod -R g+s "$full_path/$dir"
             done
 
-            # Create SQLite database file if needed
-            # NOTE: If the .env file has DB_CONNECTION=sqlite (even if commented), we leave the commented-out DB_* variables intact.
+            # Create SQLite database file if needed.
+            # NOTE: If the .env file contains "DB_CONNECTION=sqlite" (even if commented),
+            # we create the database file without removing the commented DB variables.
             if [ -f "$full_path/.env" ] && grep -E "^[[:space:]]*#?[[:space:]]*DB_CONNECTION=sqlite" "$full_path/.env" > /dev/null; then
                 echo "Configuring SQLite database..."
                 sudo -u "$CURRENT_USER" touch "$full_path/database/database.sqlite"
@@ -363,7 +365,7 @@ server {
 
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/run/php/php\${php_version}-fpm.sock;
+        fastcgi_pass unix:/run/php/php${php_version:-$DEFAULT_PHP_VERSION}-fpm.sock;
         include fastcgi_params;
     }
 
