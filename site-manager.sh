@@ -241,13 +241,25 @@ create_site() {
 
         # Install Laravel project
         if [ -z "$(ls -A "$full_path")" ]; then
-            echo "Installing Laravel project..."
-            sudo -u "$CURRENT_USER" -i bash -c \
-                "cd '$full_path' && composer create-project --prefer-dist laravel/laravel ."
-            
-            [ $? -ne 0 ] && { echo "Laravel installation failed!"; exit 1; }
-        fi
-        document_root="${full_path}/public"
+        echo "Installing Laravel project..."
+        sudo -u "$CURRENT_USER" -i bash -c \
+            "cd '$full_path' && composer create-project --prefer-dist laravel/laravel ."
+        
+        [ $? -ne 0 ] && { echo "Laravel installation failed!"; exit 1; }
+
+        # Add Laravel specific permissions
+        echo -e "\n${YELLOW}Setting Laravel directory permissions...${NC}"
+        sudo chown -R www-data:www-data "$full_path/storage"
+        sudo chown -R www-data:www-data "$full_path/bootstrap/cache"
+        sudo find "$full_path/storage" -type d -exec chmod 775 {} \;
+        sudo find "$full_path/storage" -type f -exec chmod 664 {} \;
+        sudo find "$full_path/bootstrap/cache" -type d -exec chmod 775 {} \;
+        sudo chmod -R g+s "$full_path/storage"
+        sudo chmod -R g+s "$full_path/bootstrap/cache"
+        echo -e "${GREEN}Laravel permissions configured!${NC}"
+    fi
+
+    document_root="${full_path}/public"
     else
         document_root="$full_path"
         sudo touch "${document_root}/index.php"
