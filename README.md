@@ -34,10 +34,10 @@ sudo rm /usr/local/bin/site-manager
 site-manager check
 
 # Server setup wizard
-site-manager setup
+sudo site-manager setup
 
 # Start interactive menu
-site-manager
+sudo site-manager
 ```
 
 ### Advanced Usage
