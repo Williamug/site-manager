@@ -373,19 +373,23 @@ EOF
 
 backup_site() {
     local domain=$1
-    local custom_dir=${2:-$BACKUP_DIR}
+    # Allow specifying a custom backup destination
+    read -p "Enter custom backup destination (or press Enter to use default [$BACKUP_DIR]): " custom_dest
+    if [ -n "$custom_dest" ]; then
+        custom_dir="$custom_dest"
+    else
+        custom_dir="$BACKUP_DIR"
+    fi
+
     local default_backup_name="${domain}_$(date +%Y%m%d%H%M)"
     local backup_dir="${custom_dir}/${default_backup_name}"
-    local sql_file="${backup_dir}/db_dump.sql"
-    local backup_code=false
-    local backup_db=false
 
     mkdir -p "$custom_dir" || {
         echo "Failed to create backup directory: $custom_dir"
         return 1
     }
 
-    echo -e "${YELLOW}Backup destination: ${custom_dir}/${default_backup_name}.{format}${NC}"
+    echo -e "${YELLOW}Backup destination: ${custom_dir}/${default_backup_name}{format}${NC}"
     echo -e "Default backup name: ${default_backup_name} (press Enter to keep)\n"
 
     read -p "Enter custom backup name [${default_backup_name}]: " backup_name
@@ -396,20 +400,47 @@ backup_site() {
 
     echo -e "\n${YELLOW}Select backup type (default: 1):${NC}"
     PS3="Enter your choice (1-3): "
+    local backup_code=false
+    local backup_db=false
     select type in "Both project code and database" "Project code only" "Database only"; do
         case $REPLY in
-            1) backup_code=true; backup_db=true ;;
-            2) backup_code=true ;;
-            3) backup_db=true ;;
-            *) echo "Using default (Both)"; backup_code=true; backup_db=true ;;
+            1) backup_code=true; backup_db=true; break;;
+            2) backup_code=true; break;;
+            3) backup_db=true; break;;
+            *) echo "Using default (Both)"; backup_code=true; backup_db=true; break;;
         esac
-        break
     done
 
-    if [ -f "${backup_dir}.tar.gz" ]; then
-        echo -e "${GREEN}Backup created: ${backup_dir}.tar.gz${NC}"
-        echo -e "Full path: $(realpath "${backup_dir}.tar.gz")\n"
+    # Prompt for the project directory to backup
+    read -p "Enter full path of the project directory to backup: " project_dir
+    if [ ! -d "$project_dir" ]; then
+        echo "Project directory does not exist!"
+        return 1
     fi
+
+    # Create a temporary directory to gather backup files
+    local temp_backup_dir="${backup_dir}_temp"
+    mkdir -p "$temp_backup_dir" || {
+        echo "Failed to create temporary backup directory"
+        return 1
+    }
+
+    if $backup_code; then
+        cp -a "$project_dir" "$temp_backup_dir/"
+    fi
+
+    if $backup_db; then
+        read -p "Enter database name: " db_name
+        read -p "Enter database user: " db_user
+        read -s -p "Enter database password: " db_pass
+        echo ""
+        mysqldump -u "$db_user" -p"$db_pass" "$db_name" > "$temp_backup_dir/db_dump.sql"
+    fi
+
+    tar -czf "${backup_dir}.tar.gz" -C "$(dirname "$temp_backup_dir")" "$(basename "$temp_backup_dir")"
+    rm -rf "$temp_backup_dir"
+    echo -e "${GREEN}Backup created: ${backup_dir}.tar.gz${NC}"
+    echo -e "Full path: $(realpath "${backup_dir}.tar.gz")\n"
 }
 
 restore_site() {
