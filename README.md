@@ -7,8 +7,8 @@ A complete solution for server administration and web project management with ad
 
 ## Features 
 
-- **Server Setup**: Install & configure Nginx, PHP, MySQL, Node.js and NPM
-- **Site Management**: Create/delete/move/clone projects
+- **Server Setup**: Install & configure Nginx, PHP, MySQL,composer, Node.js and NPM
+- **Site Management**: create, delete, move, clone projects
 - **Security**: SSL certificate management, permission hardening
 - **Backup System**: Full site backups and restores
 - **Dependency Checks**: Verify installed components
