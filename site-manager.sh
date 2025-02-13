@@ -10,7 +10,6 @@ CONFIG_DIR="/etc/site-manager"
 LOG_DIR="/var/log/site-manager"
 BACKUP_DIR="/var/backups/sites"
 PHP_SOCKET="/run/php/php@VERSION@-fpm.sock"
-DEFAULT_PHP_VERSION="8.1"  # Default PHP version if not explicitly set
 
 # Colors
 RED='\033[0;31m'
@@ -18,6 +17,19 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
+
+# Function to get default PHP version from installed PHP-FPM socket(s)
+get_default_php_version() {
+    local socket
+    socket=$(ls /run/php/php*-fpm.sock 2>/dev/null | head -n 1)
+    if [ -n "$socket" ]; then
+        echo "$socket" | sed -E 's/.*php([0-9]+\.[0-9]+)-fpm.sock/\1/'
+    else
+        echo "8.1"
+    fi
+}
+
+DEFAULT_PHP_VERSION=$(get_default_php_version)
 
 # ---------- Core Functions ----------
 show_header() {
@@ -80,7 +92,6 @@ check_tool() {
 
 check_dependencies() {
     echo -e "\n${YELLOW}Checking System Dependencies:${NC}"
-    
     check_tool "nginx"
     check_tool "php"
     check_tool "mysqld"
@@ -159,7 +170,6 @@ setup_server() {
         sudo php composer-setup.php --install-dir=/usr/local/bin --filename=composer
         rm composer-setup.php
 
-        # Detect shell configuration
         detect_shell_config() {
             case $(basename "$SHELL") in
                 bash*)  echo "$HOME/.bashrc" ;;
@@ -171,7 +181,6 @@ setup_server() {
 
         config_file=$(detect_shell_config)
         
-        # Verify PATH configuration
         if ! echo "$PATH" | grep -q "/usr/local/bin"; then
             echo -e "\n${YELLOW}Composer installed to /usr/local/bin which is not in your PATH${NC}"
             echo "Detected shell configuration file: $config_file"
@@ -184,7 +193,6 @@ setup_server() {
                 echo "Adding to $config_file..."
                 echo -e "\n# Added by Site Manager\nexport PATH=\"\$PATH:/usr/local/bin\"" | tee -a "$config_file"
                 
-                # Load new PATH
                 if [ -f "$config_file" ]; then
                     source "$config_file"
                 else
@@ -196,7 +204,6 @@ setup_server() {
         fi
     fi
 
-    # Configure permissions
     echo "Configuring permissions..."
     sudo mkdir -p "$WEB_ROOT"
     sudo chown -R "$USER":www-data "$WEB_ROOT"
@@ -207,7 +214,6 @@ setup_server() {
     echo "Note: You may need to log out and back in for group changes to take effect"
 }
 
-# ---------- Site Management Functions ----------
 create_site() {
     local CURRENT_USER
     CURRENT_USER=$(get_current_user)
@@ -217,7 +223,6 @@ create_site() {
     
     full_path="${WEB_ROOT}/${path}"
     
-    # Create directory structure
     sudo mkdir -p "$full_path"
     sudo chown -R "$CURRENT_USER":www-data "$full_path"
     sudo chmod -R 775 "$full_path"
@@ -232,13 +237,9 @@ create_site() {
                 exit 1
             fi
 
-            # Add Laravel specific permissions
             echo -e "\n${YELLOW}Setting Laravel directory permissions...${NC}"
-            
-            # Create database directory if using SQLite
             sudo -u "$CURRENT_USER" mkdir -p "$full_path/database"
             
-            # Set permissions for critical directories
             for dir in storage bootstrap/cache database; do
                 sudo chown -R www-data:www-data "$full_path/$dir"
                 sudo find "$full_path/$dir" -type d -exec chmod 775 {} \;
@@ -246,16 +247,12 @@ create_site() {
                 sudo chmod -R g+s "$full_path/$dir"
             done
 
-            # Create SQLite database file if needed.
-            # NOTE: If the .env file contains "DB_CONNECTION=sqlite" (even if commented),
-            # we create the database file without removing the commented DB variables.
             if [ -f "$full_path/.env" ] && grep -E "^[[:space:]]*#?[[:space:]]*DB_CONNECTION=sqlite" "$full_path/.env" > /dev/null; then
                 echo "Configuring SQLite database..."
                 sudo -u "$CURRENT_USER" touch "$full_path/database/database.sqlite"
                 sudo chown www-data:www-data "$full_path/database/database.sqlite"
                 sudo chmod 664 "$full_path/database/database.sqlite"
             fi
-
         fi
         document_root="${full_path}/public"
     else
@@ -277,7 +274,6 @@ delete_site() {
         return 1
     fi
     
-    # Get document root from config
     document_root=$(grep -m1 "root " "$config_file" | awk '{print $2}' | tr -d ';')
     if [[ "$document_root" == *"/public" ]]; then
         project_root=$(dirname "$document_root")
@@ -296,12 +292,10 @@ delete_site() {
         return
     fi
 
-    # Remove configs
     sudo rm -f "$config_file"
     sudo rm -f "${NGINX_DIR}/sites-enabled/${domain}"
     sudo sed -i "/${domain}/d" /etc/hosts
 
-    # Handle files
     if [ -d "$project_root" ]; then
         read -p "Delete project files? [y/N] " delete_files
         if [[ "$delete_files" =~ ^[Yy] ]]; then
@@ -337,12 +331,10 @@ clone_project() {
     project_name=$(basename "$repo_url" .git)
     target_path="${WEB_ROOT}/${project_name}"
     
-    # Create directory with proper permissions
     sudo mkdir -p "$target_path"
     sudo chown -R "$CURRENT_USER":www-data "$target_path"
     sudo chmod -R 775 "$target_path"
     
-    # Clone repository
     sudo -u "$CURRENT_USER" git clone "$repo_url" "$target_path"
     setup_nginx "$domain" "$target_path"
     echo -e "${GREEN}Project cloned to: ${target_path}${NC}"
@@ -379,35 +371,29 @@ EOF
     sudo nginx -t && sudo systemctl reload nginx
 }
 
-# ---------- Backup/Restore Functions ----------
 backup_site() {
     local domain=$1
-    local custom_dir=${2:-$BACKUP_DIR}  # Use provided dir or default
+    local custom_dir=${2:-$BACKUP_DIR}
     local default_backup_name="${domain}_$(date +%Y%m%d%H%M)"
     local backup_dir="${custom_dir}/${default_backup_name}"
     local sql_file="${backup_dir}/db_dump.sql"
     local backup_code=false
     local backup_db=false
 
-    # Ensure destination exists
     mkdir -p "$custom_dir" || {
         echo "Failed to create backup directory: $custom_dir"
         return 1
     }
 
-    # Show backup destination
     echo -e "${YELLOW}Backup destination: ${custom_dir}/${default_backup_name}.{format}${NC}"
     echo -e "Default backup name: ${default_backup_name} (press Enter to keep)\n"
 
-    # Custom backup name
     read -p "Enter custom backup name [${default_backup_name}]: " backup_name
     backup_name=${backup_name:-$default_backup_name}
     backup_dir="${custom_dir}/${backup_name}"
 
-    # Create working directory
     mkdir -p "$backup_dir"
 
-    # Backup type selection
     echo -e "\n${YELLOW}Select backup type (default: 1):${NC}"
     PS3="Enter your choice (1-3): "
     select type in "Both project code and database" "Project code only" "Database only"; do
@@ -420,9 +406,6 @@ backup_site() {
         break
     done
 
-    # ... [rest of backup process remains similar] ...
-
-    # Final output (assuming a file was created)
     if [ -f "${backup_dir}.tar.gz" ]; then
         echo -e "${GREEN}Backup created: ${backup_dir}.tar.gz${NC}"
         echo -e "Full path: $(realpath "${backup_dir}.tar.gz")\n"
@@ -431,9 +414,9 @@ backup_site() {
 
 restore_site() {
     local backup_file=$1
+    read -p "Enter domain for database restore (if applicable): " restore_domain
     echo -e "\n${YELLOW}Restoring from: ${backup_file}${NC}"
     
-    # Detect backup type
     if [[ "$backup_file" == */* ]]; then
         local restore_dir
         restore_dir=$(dirname "$backup_file")
@@ -451,18 +434,16 @@ restore_site() {
         return 1
     fi
     
-    # Database restore prompt
-    if [ -f "${WEB_ROOT}/${domain}/db_dump.sql" ]; then
-        read -p "Found database dump. Restore database? [y/N] " restore_db
+    if [ -n "$restore_domain" ] && [ -f "${WEB_ROOT}/${restore_domain}/db_dump.sql" ]; then
+        read -p "Found database dump for ${restore_domain}. Restore database? [y/N] " restore_db
         if [[ "$restore_db" =~ ^[Yy] ]]; then
-            mysql -h "$db_host" -u "$db_user" -p"$db_pass" "$db_name" < "${WEB_ROOT}/${domain}/db_dump.sql"
+            mysql -h "$db_host" -u "$db_user" -p"$db_pass" "$db_name" < "${WEB_ROOT}/${restore_domain}/db_dump.sql"
         fi
     fi
     
     echo -e "${GREEN}Restore completed!${NC}"
 }
 
-# ---------- SSL Functions ----------
 setup_ssl() {
     local domain=$1
     sudo apt install -y certbot python3-certbot-nginx
