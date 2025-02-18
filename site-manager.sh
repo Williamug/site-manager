@@ -294,28 +294,22 @@ move_project() {
     local CURRENT_USER
     CURRENT_USER=$(get_current_user)
     read -p "Enter full path to project: " source_path
-    # Expand tilde if present (if you use ~, it'll be expanded)
-    source_path=$(eval echo "$source_path")
-
-    echo "DEBUG: Source path is '$source_path'"
-
-    if [ ! -d "$source_path" ]; then
+    # Use realpath to resolve absolute path
+    source_path=$(realpath "$source_path" 2>/dev/null)
+    if [ -z "$source_path" ] || [ ! -d "$source_path" ]; then
         echo -e "${RED}Error: Source directory '$source_path' does not exist.${NC}"
         exit 1
     fi
-
+    echo "DEBUG: Source path resolved to '$source_path'"
     read -p "Enter domain name: " domain
     project_name=$(basename "$source_path")
     target_path="${WEB_ROOT}/${project_name}"
-
-    echo "DEBUG: Target path is '$target_path'"
-
+    echo "DEBUG: Target path will be '$target_path'"
     sudo rsync -a "$source_path/" "$target_path/"
     sudo chown -R "$CURRENT_USER":www-data "$target_path"
     setup_nginx "$domain" "$target_path"
     echo -e "${GREEN}Project moved to: ${target_path}${NC}"
 }
-
 
 
 clone_project() {
