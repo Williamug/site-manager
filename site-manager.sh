@@ -291,10 +291,10 @@ delete_site() {
 }
 
 move_project() {
+    set -x
     local CURRENT_USER
     CURRENT_USER=$(get_current_user)
     read -p "Enter full path to project: " source_path
-    # Use realpath to resolve absolute path
     source_path=$(realpath "$source_path" 2>/dev/null)
     if [ -z "$source_path" ] || [ ! -d "$source_path" ]; then
         echo -e "${RED}Error: Source directory '$source_path' does not exist.${NC}"
@@ -309,6 +309,7 @@ move_project() {
     sudo chown -R "$CURRENT_USER":www-data "$target_path"
     setup_nginx "$domain" "$target_path"
     echo -e "${GREEN}Project moved to: ${target_path}${NC}"
+    set +x
 }
 
 
