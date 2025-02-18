@@ -296,6 +296,13 @@ move_project() {
     read -p "Enter full path to project: " source_path
     # Expand tilde if present
     source_path=$(eval echo "$source_path")
+
+    # Check if the source directory exists
+    if [ ! -d "$source_path" ]; then
+        echo -e "${RED}Error: Source directory '$source_path' does not exist.${NC}"
+        exit 1
+    fi
+
     read -p "Enter domain name: " domain
 
     project_name=$(basename "$source_path")
@@ -306,6 +313,7 @@ move_project() {
     setup_nginx "$domain" "$target_path"
     echo -e "${GREEN}Project moved to: ${target_path}${NC}"
 }
+
 
 clone_project() {
     local CURRENT_USER
