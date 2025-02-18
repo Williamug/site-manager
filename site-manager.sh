@@ -54,7 +54,7 @@ check_tool() {
     local get_version=$2
     local user
     user=$(get_current_user)
-    
+
     if command -v "$tool" &>/dev/null; then
         version=""
         case $tool in
@@ -77,7 +77,7 @@ check_tool() {
                 version=$(sudo -u "$user" -i composer --version 2>/dev/null | awk '{print $3}')
                 ;;
         esac
-        
+
         if [ -n "$version" ]; then
             echo -e "${GREEN}✔️ $tool $version${NC}"
         else
@@ -103,7 +103,7 @@ check_dependencies() {
 setup_server() {
     show_header
     echo -e "${YELLOW}This Is The Initial Server Setup${NC}"
-    
+
     # PHP Version Selection using select (enter the option number)
     PS3="Select PHP version (enter the option number): "
     select chosen in 8.4 8.3 8.2 8.1; do
@@ -117,7 +117,7 @@ setup_server() {
 
     # Install components
     sudo apt update
-    
+
     # Nginx
     if ! command -v nginx &>/dev/null; then
         echo "Installing Nginx..."
@@ -146,7 +146,7 @@ setup_server() {
     if ! command -v mysqld &>/dev/null; then
         echo "Installing MySQL..."
         sudo apt install -y mysql-server
-        
+
         echo -e "\n${YELLOW}Setting MySQL root password:${NC}"
         sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$DB_ROOT_PASS';"
         sudo mysql_secure_installation
@@ -157,7 +157,7 @@ setup_server() {
         echo "Installing Node.js and npm..."
         curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
         sudo apt install -y nodejs
-        
+
         # Verify npm installation
         if ! command -v npm &>/dev/null; then
             echo "Installing npm separately..."
@@ -182,19 +182,19 @@ setup_server() {
         }
 
         config_file=$(detect_shell_config)
-        
+
         if ! echo "$PATH" | grep -q "/usr/local/bin"; then
             echo -e "\n${YELLOW}Composer installed to /usr/local/bin which is not in your PATH${NC}"
             echo "Detected shell configuration file: $config_file"
-            
+
             read -p "Add /usr/local/bin to PATH? [Y/n] " response
             if [[ ! "$response" =~ ^[Nn] ]]; then
                 read -p "Enter path to shell config file [$config_file]: " custom_file
                 config_file=${custom_file:-$config_file}
-                
+
                 echo "Adding to $config_file..."
                 echo -e "\n# Added by Site Manager\nexport PATH=\"\$PATH:/usr/local/bin\"" | tee -a "$config_file"
-                
+
                 if [ -f "$config_file" ]; then
                     source "$config_file"
                 else
@@ -211,7 +211,7 @@ setup_server() {
     sudo chown -R "$USER":www-data "$WEB_ROOT"
     sudo chmod -R 775 "$WEB_ROOT"
     sudo usermod -aG www-data "$USER"
-    
+
     echo -e "\n${GREEN}Server setup complete!${NC}"
     echo "Note: You may need to log out and back in for group changes to take effect"
 }
@@ -222,18 +222,18 @@ create_site() {
     read -p "Enter domain name (e.g., example.test): " domain
     read -p "Project path relative to ${WEB_ROOT}: " path
     read -p "Is this a Laravel project? [y/N]: " laravel
-    
+
     full_path="${WEB_ROOT}/${path}"
-    
+
     sudo mkdir -p "$full_path"
     sudo chown -R "$CURRENT_USER":www-data "$full_path"
     sudo chmod -R 775 "$full_path"
-    
+
     if [[ "$laravel" =~ ^[Yy]$ ]]; then
         if [ -z "$(ls -A "$full_path")" ]; then
             echo "Installing Laravel project..."
             sudo -u "$CURRENT_USER" -i bash -c "cd '$full_path' && composer create-project --prefer-dist laravel/laravel ."
-            
+
             if [ $? -ne 0 ]; then
                 echo "Laravel installation failed!"
                 exit 1
@@ -241,7 +241,7 @@ create_site() {
 
             echo -e "\n${YELLOW}Setting Laravel directory permissions...${NC}"
             sudo -u "$CURRENT_USER" mkdir -p "$full_path/database"
-            
+
             for dir in storage bootstrap/cache database; do
                 sudo chown -R www-data:www-data "$full_path/$dir"
                 sudo find "$full_path/$dir" -type d -exec chmod 775 {} \;
@@ -261,7 +261,7 @@ create_site() {
         document_root="$full_path"
         sudo touch "${document_root}/index.php"
     fi
-    
+
     setup_nginx "$domain" "$document_root"
     echo -e "${GREEN}Project created: http://${domain}${NC}"
 }
@@ -270,12 +270,12 @@ delete_site() {
     local domain delete_files project_root document_root
     read -p "Enter domain to delete: " domain
     local config_file="${NGINX_DIR}/sites-available/${domain}"
-    
+
     if [ ! -f "$config_file" ]; then
         echo -e "${RED}Error: No configuration found for ${domain}${NC}"
         return 1
     fi
-    
+
     document_root=$(grep -m1 "root " "$config_file" | awk '{print $2}' | tr -d ';')
     if [[ "$document_root" == *"/public" ]]; then
         project_root=$(dirname "$document_root")
@@ -287,7 +287,7 @@ delete_site() {
     echo "• Domain configuration: $config_file"
     echo "• Hosts entry: $domain"
     echo "• Project files: $project_root"
-    
+
     read -p "Are you sure you want to do this? [y/N] " confirm
     if [[ ! "$confirm" =~ ^[Yy] ]]; then
         echo "Deletion cancelled"
@@ -314,10 +314,10 @@ move_project() {
     CURRENT_USER=$(get_current_user)
     read -p "Enter full path to project: " source_path
     read -p "Enter domain name: " domain
-    
+
     project_name=$(basename "$source_path")
     target_path="${WEB_ROOT}/${project_name}"
-    
+
     sudo rsync -a "$source_path/" "$target_path/"
     sudo chown -R "$CURRENT_USER":www-data "$target_path"
     setup_nginx "$domain" "$target_path"
@@ -329,14 +329,14 @@ clone_project() {
     CURRENT_USER=$(get_current_user)
     read -p "Git repository URL: " repo_url
     read -p "Enter domain name: " domain
-    
+
     project_name=$(basename "$repo_url" .git)
     target_path="${WEB_ROOT}/${project_name}"
-    
+
     sudo mkdir -p "$target_path"
     sudo chown -R "$CURRENT_USER":www-data "$target_path"
     sudo chmod -R 775 "$target_path"
-    
+
     sudo -u "$CURRENT_USER" git clone "$repo_url" "$target_path"
     setup_nginx "$domain" "$target_path"
     echo -e "${GREEN}Project cloned to: ${target_path}${NC}"
@@ -345,7 +345,7 @@ clone_project() {
 setup_nginx() {
     local domain=$1
     local root_path=$2
-    
+
     cat << EOF | sudo tee "${NGINX_DIR}/sites-available/${domain}" > /dev/null
 server {
     listen 80;
@@ -368,7 +368,8 @@ server {
 }
 EOF
 
-    sudo ln -sf "../sites-available/${domain}" "${NGINX_DIR}/sites-enabled/"
+    # Create an absolute symlink in sites-enabled
+    sudo ln -sf "${NGINX_DIR}/sites-available/${domain}" "${NGINX_DIR}/sites-enabled/${domain}"
     echo "127.0.0.1 ${domain}" | sudo tee -a /etc/hosts > /dev/null
     sudo nginx -t && sudo systemctl reload nginx
 }
@@ -449,7 +450,7 @@ restore_site() {
     local backup_file=$1
     read -p "Enter domain for database restore (if applicable): " restore_domain
     echo -e "\n${YELLOW}Restoring from: ${backup_file}${NC}"
-    
+
     if [[ "$backup_file" == */* ]]; then
         local restore_dir
         restore_dir=$(dirname "$backup_file")
@@ -457,7 +458,7 @@ restore_site() {
         local restore_dir="$BACKUP_DIR"
         echo -e "Using default backup location: $restore_dir"
     fi
-    
+
     if [[ "$backup_file" == *.tar.gz ]]; then
         tar -xzf "$backup_file" -C "$WEB_ROOT"
     elif [[ "$backup_file" == *.zip ]]; then
@@ -466,14 +467,14 @@ restore_site() {
         echo "Unsupported format - use .tar.gz or .zip"
         return 1
     fi
-    
+
     if [ -n "$restore_domain" ] && [ -f "${WEB_ROOT}/${restore_domain}/db_dump.sql" ]; then
         read -p "Found database dump for ${restore_domain}. Restore database? [y/N] " restore_db
         if [[ "$restore_db" =~ ^[Yy] ]]; then
             mysql -h "$db_host" -u "$db_user" -p"$db_pass" "$db_name" < "${WEB_ROOT}/${restore_domain}/db_dump.sql"
         fi
     fi
-    
+
     echo -e "${GREEN}Restore completed!${NC}"
 }
 
@@ -515,7 +516,7 @@ case "$1" in
             echo "7) Setup SSL"
             echo "8) Exit"
             read -p "Select operation [1-8]: " choice
-            
+
             case $choice in
                 1) create_site ;;
                 2) delete_site ;;
