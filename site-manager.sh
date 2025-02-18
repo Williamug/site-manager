@@ -294,9 +294,13 @@ move_project() {
     local CURRENT_USER
     CURRENT_USER=$(get_current_user)
     read -p "Enter full path to project: " source_path
+    # Expand tilde if present
+    source_path=$(eval echo "$source_path")
     read -p "Enter domain name: " domain
+
     project_name=$(basename "$source_path")
     target_path="${WEB_ROOT}/${project_name}"
+
     sudo rsync -a "$source_path/" "$target_path/"
     sudo chown -R "$CURRENT_USER":www-data "$target_path"
     setup_nginx "$domain" "$target_path"
