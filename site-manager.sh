@@ -51,12 +51,11 @@ get_current_user() {
 
 check_tool() {
     local tool=$1
-    local get_version=$2
     local user
     user=$(get_current_user)
 
     if command -v "$tool" &>/dev/null; then
-        version=""
+        local version=""
         case $tool in
             nginx)
                 version=$(nginx -v 2>&1 | awk -F/ '{print $2}' | cut -d' ' -f1)
@@ -115,7 +114,6 @@ setup_server() {
         fi
     done
 
-    # Install components
     sudo apt update
 
     # Nginx
@@ -146,7 +144,6 @@ setup_server() {
     if ! command -v mysqld &>/dev/null; then
         echo "Installing MySQL..."
         sudo apt install -y mysql-server
-
         echo -e "\n${YELLOW}Setting MySQL root password:${NC}"
         sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$DB_ROOT_PASS';"
         sudo mysql_secure_installation
@@ -157,8 +154,6 @@ setup_server() {
         echo "Installing Node.js and npm..."
         curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
         sudo apt install -y nodejs
-
-        # Verify npm installation
         if ! command -v npm &>/dev/null; then
             echo "Installing npm separately..."
             sudo apt install -y npm
@@ -182,19 +177,15 @@ setup_server() {
         }
 
         config_file=$(detect_shell_config)
-
         if ! echo "$PATH" | grep -q "/usr/local/bin"; then
             echo -e "\n${YELLOW}Composer installed to /usr/local/bin which is not in your PATH${NC}"
             echo "Detected shell configuration file: $config_file"
-
             read -p "Add /usr/local/bin to PATH? [Y/n] " response
             if [[ ! "$response" =~ ^[Nn] ]]; then
                 read -p "Enter path to shell config file [$config_file]: " custom_file
                 config_file=${custom_file:-$config_file}
-
                 echo "Adding to $config_file..."
                 echo -e "\n# Added by Site Manager\nexport PATH=\"\$PATH:/usr/local/bin\"" | tee -a "$config_file"
-
                 if [ -f "$config_file" ]; then
                     source "$config_file"
                 else
@@ -233,26 +224,23 @@ create_site() {
         if [ -z "$(ls -A "$full_path")" ]; then
             echo "Installing Laravel project..."
             sudo -u "$CURRENT_USER" -i bash -c "cd '$full_path' && composer create-project --prefer-dist laravel/laravel ."
-
             if [ $? -ne 0 ]; then
                 echo "Laravel installation failed!"
                 exit 1
             fi
-
             echo -e "\n${YELLOW}Setting Laravel directory permissions...${NC}"
             sudo -u "$CURRENT_USER" mkdir -p "$full_path/database"
-
+            # Set ownership to CURRENT_USER:www-data so you (the current user) retain write permissions.
             for dir in storage bootstrap/cache database; do
-                sudo chown -R www-data:www-data "$full_path/$dir"
+                sudo chown -R "$CURRENT_USER":www-data "$full_path/$dir"
                 sudo find "$full_path/$dir" -type d -exec chmod 775 {} \;
                 sudo find "$full_path/$dir" -type f -exec chmod 664 {} \;
                 sudo chmod -R g+s "$full_path/$dir"
             done
-
             if [ -f "$full_path/.env" ] && grep -E "^[[:space:]]*#?[[:space:]]*DB_CONNECTION=sqlite" "$full_path/.env" > /dev/null; then
                 echo "Configuring SQLite database..."
                 sudo -u "$CURRENT_USER" touch "$full_path/database/database.sqlite"
-                sudo chown www-data:www-data "$full_path/database/database.sqlite"
+                sudo chown "$CURRENT_USER":www-data "$full_path/database/database.sqlite"
                 sudo chmod 664 "$full_path/database/database.sqlite"
             fi
         fi
@@ -270,41 +258,34 @@ delete_site() {
     local domain delete_files project_root document_root
     read -p "Enter domain to delete: " domain
     local config_file="${NGINX_DIR}/sites-available/${domain}"
-
     if [ ! -f "$config_file" ]; then
         echo -e "${RED}Error: No configuration found for ${domain}${NC}"
         return 1
     fi
-
     document_root=$(grep -m1 "root " "$config_file" | awk '{print $2}' | tr -d ';')
     if [[ "$document_root" == *"/public" ]]; then
         project_root=$(dirname "$document_root")
     else
         project_root="$document_root"
     fi
-
     echo -e "\n${RED}WARNING: This will permanently delete:${NC}"
     echo "• Domain configuration: $config_file"
     echo "• Hosts entry: $domain"
     echo "• Project files: $project_root"
-
     read -p "Are you sure you want to do this? [y/N] " confirm
     if [[ ! "$confirm" =~ ^[Yy] ]]; then
         echo "Deletion cancelled"
         return
     fi
-
     sudo rm -f "$config_file"
     sudo rm -f "${NGINX_DIR}/sites-enabled/${domain}"
     sudo sed -i "/${domain}/d" /etc/hosts
-
     if [ -d "$project_root" ]; then
         read -p "Delete project files? [y/N] " delete_files
         if [[ "$delete_files" =~ ^[Yy] ]]; then
             sudo rm -rfv "$project_root"
         fi
     fi
-
     sudo systemctl reload nginx
     echo -e "${GREEN}Project ${domain} removed!${NC}"
 }
@@ -314,10 +295,8 @@ move_project() {
     CURRENT_USER=$(get_current_user)
     read -p "Enter full path to project: " source_path
     read -p "Enter domain name: " domain
-
     project_name=$(basename "$source_path")
     target_path="${WEB_ROOT}/${project_name}"
-
     sudo rsync -a "$source_path/" "$target_path/"
     sudo chown -R "$CURRENT_USER":www-data "$target_path"
     setup_nginx "$domain" "$target_path"
@@ -329,14 +308,11 @@ clone_project() {
     CURRENT_USER=$(get_current_user)
     read -p "Git repository URL: " repo_url
     read -p "Enter domain name: " domain
-
     project_name=$(basename "$repo_url" .git)
     target_path="${WEB_ROOT}/${project_name}"
-
     sudo mkdir -p "$target_path"
     sudo chown -R "$CURRENT_USER":www-data "$target_path"
     sudo chmod -R 775 "$target_path"
-
     sudo -u "$CURRENT_USER" git clone "$repo_url" "$target_path"
     setup_nginx "$domain" "$target_path"
     echo -e "${GREEN}Project cloned to: ${target_path}${NC}"
@@ -345,7 +321,6 @@ clone_project() {
 setup_nginx() {
     local domain=$1
     local root_path=$2
-
     cat << EOF | sudo tee "${NGINX_DIR}/sites-available/${domain}" > /dev/null
 server {
     listen 80;
@@ -367,40 +342,36 @@ server {
     error_log /var/log/nginx/${domain}-error.log;
 }
 EOF
-
-    # Create an absolute symlink in sites-enabled
+    echo "Nginx config created at ${NGINX_DIR}/sites-available/${domain}"
     sudo ln -sf "${NGINX_DIR}/sites-available/${domain}" "${NGINX_DIR}/sites-enabled/${domain}"
-    echo "127.0.0.1 ${domain}" | sudo tee -a /etc/hosts > /dev/null
+    echo "Symlink created: ${NGINX_DIR}/sites-enabled/${domain}"
+    echo "Adding domain to /etc/hosts..."
+    if ! grep -q "${domain}" /etc/hosts; then
+        echo "127.0.0.1 ${domain}" | sudo tee -a /etc/hosts > /dev/null
+    else
+        echo "${domain} already exists in /etc/hosts"
+    fi
     sudo nginx -t && sudo systemctl reload nginx
+    echo "Nginx reloaded."
 }
 
 backup_site() {
     local domain=$1
-    # Allow specifying a custom backup destination
     read -p "Enter custom backup destination (or press Enter to use default [$BACKUP_DIR]): " custom_dest
     if [ -n "$custom_dest" ]; then
         custom_dir="$custom_dest"
     else
         custom_dir="$BACKUP_DIR"
     fi
-
     local default_backup_name="${domain}_$(date +%Y%m%d%H%M)"
     local backup_dir="${custom_dir}/${default_backup_name}"
-
-    mkdir -p "$custom_dir" || {
-        echo "Failed to create backup directory: $custom_dir"
-        return 1
-    }
-
+    mkdir -p "$custom_dir" || { echo "Failed to create backup directory: $custom_dir"; return 1; }
     echo -e "${YELLOW}Backup destination: ${custom_dir}/${default_backup_name}{format}${NC}"
     echo -e "Default backup name: ${default_backup_name} (press Enter to keep)\n"
-
     read -p "Enter custom backup name [${default_backup_name}]: " backup_name
     backup_name=${backup_name:-$default_backup_name}
     backup_dir="${custom_dir}/${backup_name}"
-
     mkdir -p "$backup_dir"
-
     echo -e "\n${YELLOW}Select backup type (default: 1):${NC}"
     PS3="Enter your choice (1-3): "
     local backup_code=false
@@ -413,25 +384,16 @@ backup_site() {
             *) echo "Using default (Both)"; backup_code=true; backup_db=true; break;;
         esac
     done
-
-    # Prompt for the project directory to backup
     read -p "Enter full path of the project directory to backup: " project_dir
     if [ ! -d "$project_dir" ]; then
         echo "Project directory does not exist!"
         return 1
     fi
-
-    # Create a temporary directory to gather backup files
     local temp_backup_dir="${backup_dir}_temp"
-    mkdir -p "$temp_backup_dir" || {
-        echo "Failed to create temporary backup directory"
-        return 1
-    }
-
+    mkdir -p "$temp_backup_dir" || { echo "Failed to create temporary backup directory"; return 1; }
     if $backup_code; then
         cp -a "$project_dir" "$temp_backup_dir/"
     fi
-
     if $backup_db; then
         read -p "Enter database name: " db_name
         read -p "Enter database user: " db_user
@@ -439,7 +401,6 @@ backup_site() {
         echo ""
         mysqldump -u "$db_user" -p"$db_pass" "$db_name" > "$temp_backup_dir/db_dump.sql"
     fi
-
     tar -czf "${backup_dir}.tar.gz" -C "$(dirname "$temp_backup_dir")" "$(basename "$temp_backup_dir")"
     rm -rf "$temp_backup_dir"
     echo -e "${GREEN}Backup created: ${backup_dir}.tar.gz${NC}"
@@ -450,7 +411,6 @@ restore_site() {
     local backup_file=$1
     read -p "Enter domain for database restore (if applicable): " restore_domain
     echo -e "\n${YELLOW}Restoring from: ${backup_file}${NC}"
-
     if [[ "$backup_file" == */* ]]; then
         local restore_dir
         restore_dir=$(dirname "$backup_file")
@@ -458,7 +418,6 @@ restore_site() {
         local restore_dir="$BACKUP_DIR"
         echo -e "Using default backup location: $restore_dir"
     fi
-
     if [[ "$backup_file" == *.tar.gz ]]; then
         tar -xzf "$backup_file" -C "$WEB_ROOT"
     elif [[ "$backup_file" == *.zip ]]; then
@@ -467,14 +426,12 @@ restore_site() {
         echo "Unsupported format - use .tar.gz or .zip"
         return 1
     fi
-
     if [ -n "$restore_domain" ] && [ -f "${WEB_ROOT}/${restore_domain}/db_dump.sql" ]; then
         read -p "Found database dump for ${restore_domain}. Restore database? [y/N] " restore_db
         if [[ "$restore_db" =~ ^[Yy] ]]; then
             mysql -h "$db_host" -u "$db_user" -p"$db_pass" "$db_name" < "${WEB_ROOT}/${restore_domain}/db_dump.sql"
         fi
     fi
-
     echo -e "${GREEN}Restore completed!${NC}"
 }
 
@@ -516,7 +473,6 @@ case "$1" in
             echo "7) Setup SSL"
             echo "8) Exit"
             read -p "Select operation [1-8]: " choice
-
             case $choice in
                 1) create_site ;;
                 2) delete_site ;;
