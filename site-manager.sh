@@ -230,6 +230,7 @@ create_site() {
             fi
             echo -e "\n${YELLOW}Setting Laravel directory permissions...${NC}"
             sudo -u "$CURRENT_USER" mkdir -p "$full_path/database"
+            # Set ownership to CURRENT_USER:www-data so you (the current user) retain write permissions.
             for dir in storage bootstrap/cache database; do
                 sudo chown -R "$CURRENT_USER":www-data "$full_path/$dir"
                 sudo find "$full_path/$dir" -type d -exec chmod 775 {} \;
@@ -245,24 +246,8 @@ create_site() {
         fi
         document_root="${full_path}/public"
     else
-        index_file="${full_path}/index.php"
-        echo "Creating index.php with welcome message..."
-        sudo bash -c "cat > '$index_file'" <<EOL
-<?php
-    echo "<html><head><title>Welcome</title><style>body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }</style></head><body><h1>Welcome to Site Manager</h1><p>Your site is set up successfully!</p></body></html>";
-?>
-EOL
-        sudo chown "$CURRENT_USER":www-data "$index_file"
-        sudo chmod 664 "$index_file"
         document_root="$full_path"
-    fi
-
-    # Debug: Print document_root to verify it's set correctly
-    echo -e "\n${YELLOW}Debug: document_root = ${document_root}${NC}"
-
-    if [ -z "$document_root" ]; then
-        echo -e "${RED}Error: document_root is empty!${NC}"
-        exit 1
+        sudo touch "${document_root}/index.php"
     fi
 
     setup_nginx "$domain" "$document_root"
@@ -306,27 +291,17 @@ delete_site() {
 }
 
 move_project() {
-    set -x
     local CURRENT_USER
     CURRENT_USER=$(get_current_user)
     read -p "Enter full path to project: " source_path
-    source_path=$(realpath "$source_path" 2>/dev/null)
-    if [ -z "$source_path" ] || [ ! -d "$source_path" ]; then
-        echo -e "${RED}Error: Source directory '$source_path' does not exist.${NC}"
-        exit 1
-    fi
-    echo "DEBUG: Source path resolved to '$source_path'"
     read -p "Enter domain name: " domain
     project_name=$(basename "$source_path")
     target_path="${WEB_ROOT}/${project_name}"
-    echo "DEBUG: Target path will be '$target_path'"
     sudo rsync -a "$source_path/" "$target_path/"
     sudo chown -R "$CURRENT_USER":www-data "$target_path"
     setup_nginx "$domain" "$target_path"
     echo -e "${GREEN}Project moved to: ${target_path}${NC}"
-    set +x
 }
-
 
 clone_project() {
     local CURRENT_USER
@@ -346,16 +321,6 @@ clone_project() {
 setup_nginx() {
     local domain=$1
     local root_path=$2
-
-    # Validate root_path
-    if [ -z "$root_path" ]; then
-        echo -e "${RED}Error: root_path is empty!${NC}"
-        exit 1
-    fi
-
-    # Debug: Print root_path to verify it's set correctly
-    echo -e "\n${YELLOW}Debug: root_path = ${root_path}${NC}"
-
     cat << EOF | sudo tee "${NGINX_DIR}/sites-available/${domain}" > /dev/null
 server {
     listen 80;
