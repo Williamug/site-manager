@@ -230,7 +230,6 @@ create_site() {
             fi
             echo -e "\n${YELLOW}Setting Laravel directory permissions...${NC}"
             sudo -u "$CURRENT_USER" mkdir -p "$full_path/database"
-            # Set ownership to CURRENT_USER:www-data so you (the current user) retain write permissions.
             for dir in storage bootstrap/cache database; do
                 sudo chown -R "$CURRENT_USER":www-data "$full_path/$dir"
                 sudo find "$full_path/$dir" -type d -exec chmod 775 {} \;
@@ -246,8 +245,24 @@ create_site() {
         fi
         document_root="${full_path}/public"
     else
+        index_file="${full_path}/index.php"
+        echo "Creating index.php with welcome message..."
+        sudo bash -c "cat > '$index_file'" <<EOL
+<?php
+    echo "<html><head><title>Welcome</title><style>body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }</style></head><body><h1>Welcome to Site Manager</h1><p>Your site is set up successfully!</p></body></html>";
+?>
+EOL
+        sudo chown "$CURRENT_USER":www-data "$index_file"
+        sudo chmod 664 "$index_file"
         document_root="$full_path"
-        sudo touch "${document_root}/index.php"
+    fi
+
+    # Debug: Print document_root to verify it's set correctly
+    echo -e "\n${YELLOW}Debug: document_root = ${document_root}${NC}"
+
+    if [ -z "$document_root" ]; then
+        echo -e "${RED}Error: document_root is empty!${NC}"
+        exit 1
     fi
 
     setup_nginx "$domain" "$document_root"
@@ -331,6 +346,16 @@ clone_project() {
 setup_nginx() {
     local domain=$1
     local root_path=$2
+
+    # Validate root_path
+    if [ -z "$root_path" ]; then
+        echo -e "${RED}Error: root_path is empty!${NC}"
+        exit 1
+    fi
+
+    # Debug: Print root_path to verify it's set correctly
+    echo -e "\n${YELLOW}Debug: root_path = ${root_path}${NC}"
+
     cat << EOF | sudo tee "${NGINX_DIR}/sites-available/${domain}" > /dev/null
 server {
     listen 80;
