@@ -246,16 +246,8 @@ create_site() {
         fi
         document_root="${full_path}/public"
     else
-         index_file="${full_path}/index.php"
-        echo "Creating index.php with welcome message..."
-        sudo bash -c "cat > '$index_file'" <<EOL
-<?php
-    echo "<html><head><title>Welcome</title><style>body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }</style></head><body><h1>Welcome to Site Manager</h1><p>Your site is set up successfully!</p></body></html>";
-?>
-EOL
-        sudo chown "$CURRENT_USER":www-data "$index_file"
-        sudo chmod 664 "$index_file"
         document_root="$full_path"
+        sudo touch "${document_root}/index.php"
     fi
 
     setup_nginx "$domain" "$document_root"
