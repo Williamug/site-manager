@@ -255,6 +255,7 @@ create_site() {
 EOL
         sudo chown "$CURRENT_USER":www-data "$index_file"
         sudo chmod 664 "$index_file"
+        document_root="$full_path"
     fi
 
     setup_nginx "$domain" "$document_root"
