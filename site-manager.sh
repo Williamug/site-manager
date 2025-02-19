@@ -382,7 +382,7 @@ server {
     location ~ \.php$ {
         fastcgi_pass unix:/var/run/php/php${php_version:-$DEFAULT_PHP_VERSION}-fpm.sock;
         fastcgi_index index.php;
-        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
         include fastcgi_params;
     }
 
