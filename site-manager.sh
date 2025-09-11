@@ -1479,6 +1479,8 @@ setup_ssl() {
     fi
 }
 
+
+
 fix_permissions() {
     local CURRENT_USER
     CURRENT_USER=$(get_current_user)
