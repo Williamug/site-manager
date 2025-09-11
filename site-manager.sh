@@ -1,5 +1,5 @@
 #!/bin/bash
-# Comprehensive Server & Site Management Tool v1.0
+# Comprehensive Server & Site Management Tool v2.0
 
 set -eo pipefail
 
@@ -30,6 +30,24 @@ get_default_php_version() {
 }
 
 DEFAULT_PHP_VERSION=$(get_default_php_version)
+
+# Helper function to get PHP version
+get_php_version() {
+    # First check if php_version is already set (from setup_server)
+    if [ -n "$php_version" ]; then
+        echo "$php_version"
+        return
+    fi
+    
+    # Check config file
+    if [ -f "$CONFIG_DIR/config" ] && grep -q "php_version=" "$CONFIG_DIR/config"; then
+        grep "php_version=" "$CONFIG_DIR/config" | cut -d'=' -f2
+        return
+    fi
+    
+    # Fallback to auto-detection
+    get_default_php_version
+}
 
 # ---------- Core Functions ----------
 show_header() {
@@ -102,30 +120,44 @@ check_dependencies() {
 setup_server() {
     show_header
     echo -e "${YELLOW}This Is The Initial Server Setup${NC}"
-
+    
+    local CURRENT_USER
+    CURRENT_USER=$(get_current_user)
+    
     # PHP Version Selection using select (enter the option number)
     PS3="Select PHP version (enter the option number): "
     select chosen in 8.4 8.3 8.2 8.1; do
         if [ -n "$chosen" ]; then
-            php_version="$chosen"
+            # Make php_version global so it's available to other functions
+            export php_version="$chosen"
             break
         else
             echo "Invalid selection! Please enter the number corresponding to the PHP version."
         fi
     done
 
+    echo -e "\n${BLUE}Selected PHP version: $php_version${NC}"
     sudo apt update
 
     # Nginx
     if ! command -v nginx &>/dev/null; then
-        echo "Installing Nginx..."
-        sudo apt install -y nginx
-        sudo systemctl enable nginx
+        echo -e "\n${YELLOW}Installing Nginx...${NC}"
+        if sudo apt install -y nginx; then
+            sudo systemctl enable nginx
+            sudo systemctl start nginx
+            echo -e "${GREEN}✅ Nginx installed successfully${NC}"
+        else
+            echo -e "${RED}❌ Failed to install Nginx${NC}"
+            return 1
+        fi
+    else
+        echo -e "${GREEN}✅ Nginx is already installed${NC}"
     fi
 
     # PHP
-    echo "Installing PHP $php_version..."
-    sudo apt install -y php$php_version-fpm \
+    echo -e "\n${YELLOW}Installing PHP $php_version and extensions...${NC}"
+    if sudo apt install -y \
+        php$php_version-fpm \
         php$php_version-common \
         php$php_version-mysql \
         php$php_version-xml \
@@ -138,73 +170,171 @@ setup_server() {
         php$php_version-mbstring \
         php$php_version-opcache \
         php$php_version-soap \
-        php$php_version-zip
+        php$php_version-zip \
+        php$php_version-sqlite3 \
+        php$php_version-bcmath \
+        php$php_version-intl; then
+        
+        sudo systemctl enable php$php_version-fpm
+        sudo systemctl start php$php_version-fpm
+        echo -e "${GREEN}✅ PHP $php_version installed successfully${NC}"
+    else
+        echo -e "${RED}❌ Failed to install PHP $php_version${NC}"
+        return 1
+    fi
 
     # MySQL
     if ! command -v mysqld &>/dev/null; then
-        echo "Installing MySQL..."
-        sudo apt install -y mysql-server
-        echo -e "\n${YELLOW}Setting MySQL root password:${NC}"
-        sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$DB_ROOT_PASS';"
-        sudo mysql_secure_installation
+        echo -e "\n${YELLOW}Installing MySQL...${NC}"
+        if sudo apt install -y mysql-server; then
+            sudo systemctl enable mysql
+            sudo systemctl start mysql
+            echo -e "${GREEN}✅ MySQL installed successfully${NC}"
+            
+            # Prompt for MySQL root password
+            echo -e "\n${YELLOW}Setting up MySQL security...${NC}"
+            read -s -p "Enter a password for MySQL root user: " db_root_pass
+            echo ""
+            
+            if [ -n "$db_root_pass" ]; then
+                # Set MySQL root password
+                if sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$db_root_pass'; FLUSH PRIVILEGES;"; then
+                    echo -e "${GREEN}✅ MySQL root password set successfully${NC}"
+                    echo -e "${YELLOW}Running MySQL secure installation...${NC}"
+                    sudo mysql_secure_installation
+                else
+                    echo -e "${RED}❌ Failed to set MySQL root password${NC}"
+                fi
+            else
+                echo -e "${YELLOW}No password set for MySQL root user${NC}"
+            fi
+        else
+            echo -e "${RED}❌ Failed to install MySQL${NC}"
+            return 1
+        fi
+    else
+        echo -e "${GREEN}✅ MySQL is already installed${NC}"
     fi
 
     # Node.js and npm
     if ! command -v node &>/dev/null; then
-        echo "Installing Node.js and npm..."
-        curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-        sudo apt install -y nodejs
-        if ! command -v npm &>/dev/null; then
-            echo "Installing npm separately..."
-            sudo apt install -y npm
-        fi
-    fi
-
-    # Composer installation with shell detection
-    if ! command -v composer &>/dev/null; then
-        echo "Installing Composer..."
-        php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
-        sudo php composer-setup.php --install-dir=/usr/local/bin --filename=composer
-        rm composer-setup.php
-
-        detect_shell_config() {
-            case $(basename "$SHELL") in
-                bash*)  echo "$HOME/.bashrc" ;;
-                zsh*)   echo "$HOME/.zshrc" ;;
-                fish*)  echo "$HOME/.config/fish/config.fish" ;;
-                *)      echo "$HOME/.profile" ;;
-            esac
-        }
-
-        config_file=$(detect_shell_config)
-        if ! echo "$PATH" | grep -q "/usr/local/bin"; then
-            echo -e "\n${YELLOW}Composer installed to /usr/local/bin which is not in your PATH${NC}"
-            echo "Detected shell configuration file: $config_file"
-            read -p "Add /usr/local/bin to PATH? [Y/n] " response
-            if [[ ! "$response" =~ ^[Nn] ]]; then
-                read -p "Enter path to shell config file [$config_file]: " custom_file
-                config_file=${custom_file:-$config_file}
-                echo "Adding to $config_file..."
-                echo -e "\n# Added by Site Manager\nexport PATH=\"\$PATH:/usr/local/bin\"" | tee -a "$config_file"
-                if [ -f "$config_file" ]; then
-                    source "$config_file"
-                else
-                    echo "Could not source $config_file - please restart your shell"
-                fi
+        echo -e "\n${YELLOW}Installing Node.js and npm...${NC}"
+        # Install Node.js 20 LTS
+        if curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt install -y nodejs; then
+            echo -e "${GREEN}✅ Node.js and npm installed successfully${NC}"
+        else
+            echo -e "${RED}❌ Failed to install Node.js${NC}"
+            # Try alternative method
+            echo -e "${YELLOW}Trying alternative installation method...${NC}"
+            if sudo apt install -y nodejs npm; then
+                echo -e "${GREEN}✅ Node.js and npm installed via package manager${NC}"
             else
-                echo "You may need to add /usr/local/bin to your PATH manually"
+                echo -e "${RED}❌ Failed to install Node.js and npm${NC}"
+                return 1
             fi
         fi
+    else
+        echo -e "${GREEN}✅ Node.js is already installed${NC}"
     fi
 
-    echo "Configuring permissions..."
-    sudo mkdir -p "$WEB_ROOT"
-    sudo chown -R "$USER":www-data "$WEB_ROOT"
-    sudo chmod -R 775 "$WEB_ROOT"
-    sudo usermod -aG www-data "$USER"
+    # Composer installation with improved PATH handling
+    if ! command -v composer &>/dev/null; then
+        echo -e "\n${YELLOW}Installing Composer...${NC}"
+        
+        # Download and install Composer
+        if php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');" && \
+           sudo php composer-setup.php --install-dir=/usr/local/bin --filename=composer; then
+            rm -f composer-setup.php
+            echo -e "${GREEN}✅ Composer installed to /usr/local/bin/composer${NC}"
+            
+            # Check if /usr/local/bin is in PATH
+            if ! echo "$PATH" | grep -q "/usr/local/bin"; then
+                echo -e "\n${YELLOW}⚠️  /usr/local/bin is not in your PATH${NC}"
+                
+                # Detect shell configuration file
+                detect_shell_config() {
+                    local user_home
+                    if [ -n "$SUDO_USER" ]; then
+                        user_home=$(eval echo "~$SUDO_USER")
+                    else
+                        user_home="$HOME"
+                    fi
+                    
+                    case $(basename "$SHELL") in
+                        bash*)  echo "$user_home/.bashrc" ;;
+                        zsh*)   echo "$user_home/.zshrc" ;;
+                        fish*)  echo "$user_home/.config/fish/config.fish" ;;
+                        *)      echo "$user_home/.profile" ;;
+                    esac
+                }
+                
+                config_file=$(detect_shell_config)
+                echo "Detected shell configuration file: $config_file"
+                
+                read -p "Add /usr/local/bin to PATH in $config_file? [Y/n] " response
+                if [[ ! "$response" =~ ^[Nn] ]]; then
+                    # Create backup
+                    if [ -f "$config_file" ]; then
+                        cp "$config_file" "$config_file.backup.$(date +%Y%m%d_%H%M%S)"
+                    fi
+                    
+                    # Add PATH export
+                    echo -e "\n# Added by Site Manager" >> "$config_file"
+                    echo 'export PATH="$PATH:/usr/local/bin"' >> "$config_file"
+                    
+                    if [ -n "$SUDO_USER" ]; then
+                        sudo chown "$SUDO_USER:$SUDO_USER" "$config_file"
+                    fi
+                    
+                    echo -e "${GREEN}✅ Added /usr/local/bin to PATH in $config_file${NC}"
+                    echo -e "${YELLOW}💡 Please run: source $config_file (or restart your terminal)${NC}"
+                else
+                    echo -e "${YELLOW}⚠️  You may need to add /usr/local/bin to your PATH manually${NC}"
+                fi
+            else
+                echo -e "${GREEN}✅ /usr/local/bin is already in PATH${NC}"
+            fi
+        else
+            echo -e "${RED}❌ Failed to install Composer${NC}"
+            rm -f composer-setup.php
+            return 1
+        fi
+    else
+        echo -e "${GREEN}✅ Composer is already installed${NC}"
+    fi
 
-    echo -e "\n${GREEN}Server setup complete!${NC}"
-    echo "Note: You may need to log out and back in for group changes to take effect"
+    # Configure permissions
+    echo -e "\n${YELLOW}Configuring web directory permissions...${NC}"
+    sudo mkdir -p "$WEB_ROOT"
+    sudo chown -R "$CURRENT_USER":www-data "$WEB_ROOT"
+    sudo chmod -R 775 "$WEB_ROOT"
+    
+    # Add user to www-data group
+    if ! groups "$CURRENT_USER" | grep -q www-data; then
+        sudo usermod -aG www-data "$CURRENT_USER"
+        echo -e "${GREEN}✅ Added $CURRENT_USER to www-data group${NC}"
+        echo -e "${YELLOW}💡 Please log out and back in for group changes to take effect${NC}"
+    else
+        echo -e "${GREEN}✅ $CURRENT_USER is already in www-data group${NC}"
+    fi
+
+    # Create site-manager config directory
+    sudo mkdir -p "$CONFIG_DIR"
+    echo "php_version=$php_version" | sudo tee "$CONFIG_DIR/config" > /dev/null
+    sudo chmod 644 "$CONFIG_DIR/config"
+
+    echo -e "\n${GREEN}🎉 Server setup completed successfully!${NC}"
+    echo -e "\n${BLUE}📋 Installation Summary:${NC}"
+    echo -e "  • Nginx: $(nginx -v 2>&1 | awk -F/ '{print $2}' | cut -d' ' -f1)"
+    echo -e "  • PHP: $php_version"
+    echo -e "  • MySQL: $(mysqld --version | awk '{print $3}')"
+    echo -e "  • Node.js: $(node -v 2>/dev/null)"
+    echo -e "  • npm: $(npm -v 2>/dev/null)"
+    echo -e "  • Composer: $(composer --version 2>/dev/null | awk '{print $3}')"
+    echo -e "\n${YELLOW}💡 Next Steps:${NC}"
+    echo -e "  1. Restart your terminal or run: source ~/.zshrc"
+    echo -e "  2. Create your first site: sudo site-manager"
+    echo -e "  3. Select option 1 (Create New Project)"
 }
 
 create_site() {
@@ -306,25 +436,147 @@ delete_site() {
 }
 
 move_project() {
-    set -x
     local CURRENT_USER
     CURRENT_USER=$(get_current_user)
+
+    echo -e "${YELLOW}Moving Project to /var/www/${NC}"
+
+    # Get source path
     read -p "Enter full path to project: " source_path
     source_path=$(realpath "$source_path" 2>/dev/null)
+
     if [ -z "$source_path" ] || [ ! -d "$source_path" ]; then
         echo -e "${RED}Error: Source directory '$source_path' does not exist.${NC}"
-        exit 1
+        return 1
     fi
-    echo "DEBUG: Source path resolved to '$source_path'"
-    read -p "Enter domain name: " domain
+
+    echo "Source path resolved to '$source_path'"
+
+    # Get domain name with validation
+    while true; do
+        read -p "Enter domain name: " domain
+        if [ -z "$domain" ] || [ "$domain" = "exit" ]; then
+            echo -e "${RED}Error: Please enter a valid domain name (not empty or 'exit')${NC}"
+            continue
+        fi
+        # Basic domain validation
+        if [[ "$domain" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] || [[ "$domain" =~ \.test$ ]] || [[ "$domain" =~ \.local$ ]]; then
+            break
+        else
+            echo -e "${YELLOW}Warning: '$domain' doesn't look like a valid domain. Continue anyway? [y/N]${NC}"
+            read -p "" confirm
+            if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                break
+            fi
+        fi
+    done
+
     project_name=$(basename "$source_path")
     target_path="${WEB_ROOT}/${project_name}"
-    echo "DEBUG: Target path will be '$target_path'"
-    sudo rsync -a "$source_path/" "$target_path/"
+
+    echo "Target path will be '$target_path'"
+
+    # Check if target already exists
+    if [ -d "$target_path" ]; then
+        echo -e "${YELLOW}Warning: Target directory '$target_path' already exists.${NC}"
+        read -p "Overwrite? [y/N] " overwrite
+        if [[ ! "$overwrite" =~ ^[Yy]$ ]]; then
+            echo "Operation cancelled."
+            return 1
+        fi
+    fi
+
+    # Create target directory if it doesn't exist
+    if ! sudo mkdir -p "$target_path"; then
+        echo -e "${RED}Error: Failed to create target directory '$target_path'${NC}"
+        return 1
+    fi
+
+    # Copy files using rsync
+    echo "Copying files from '$source_path' to '$target_path'..."
+    if ! sudo rsync -av --exclude='.git' --exclude='node_modules' --exclude='vendor' "$source_path/" "$target_path/"; then
+        echo -e "${RED}Error: Failed to copy files to '$target_path'${NC}"
+        return 1
+    fi
+
+    # Set ownership and basic permissions
     sudo chown -R "$CURRENT_USER":www-data "$target_path"
-    setup_nginx "$domain" "$target_path"
-    echo -e "${GREEN}Project moved to: ${target_path}${NC}"
-    set +x
+    sudo find "$target_path" -type d -exec chmod 755 {} \;
+    sudo find "$target_path" -type f -exec chmod 644 {} \;
+
+    # Detect if it's a Laravel project
+    local is_laravel=false
+    local document_root="$target_path"
+
+    if [ -f "$target_path/artisan" ] && [ -d "$target_path/app" ] && [ -f "$target_path/composer.json" ]; then
+        is_laravel=true
+        document_root="$target_path/public"
+        echo -e "${GREEN}Laravel project detected!${NC}"
+
+        # Set Laravel-specific permissions
+        echo "Setting Laravel permissions..."
+        for dir in storage bootstrap/cache; do
+            if [ -d "$target_path/$dir" ]; then
+                sudo chown -R "$CURRENT_USER":www-data "$target_path/$dir"
+                sudo find "$target_path/$dir" -type d -exec chmod 775 {} \;
+                sudo find "$target_path/$dir" -type f -exec chmod 664 {} \;
+                sudo chmod -R g+s "$target_path/$dir"
+            fi
+        done
+
+        # Handle database directory if exists
+        if [ -d "$target_path/database" ]; then
+            sudo chown -R "$CURRENT_USER":www-data "$target_path/database"
+            sudo find "$target_path/database" -type d -exec chmod 775 {} \;
+            sudo find "$target_path/database" -type f -exec chmod 664 {} \;
+            sudo chmod -R g+s "$target_path/database"
+        fi
+
+        # Set execute permissions for artisan
+        if [ -f "$target_path/artisan" ]; then
+            sudo chmod +x "$target_path/artisan"
+        fi
+
+        # Install dependencies if composer.json exists but no vendor directory
+        if [ -f "$target_path/composer.json" ] && [ ! -d "$target_path/vendor" ]; then
+            echo "Installing Composer dependencies..."
+            sudo -u "$CURRENT_USER" bash -c "cd '$target_path' && composer install --no-dev --optimize-autoloader"
+        fi
+
+        # Create .env if .env.example exists but no .env
+        if [ -f "$target_path/.env.example" ] && [ ! -f "$target_path/.env" ]; then
+            echo "Creating .env file from .env.example..."
+            sudo -u "$CURRENT_USER" cp "$target_path/.env.example" "$target_path/.env"
+            sudo -u "$CURRENT_USER" bash -c "cd '$target_path' && php artisan key:generate --ansi"
+        fi
+    else
+        echo "Standard PHP project detected."
+        # Create index.php if no index file exists
+        if [ ! -f "$target_path/index.php" ] && [ ! -f "$target_path/index.html" ]; then
+            echo "Creating welcome index.php..."
+            sudo bash -c "cat > '$target_path/index.php'" <<EOL
+<?php
+echo "<html><head><title>Welcome to $domain</title><style>body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; background: #f5f5f5; }</style></head><body><h1>Project Moved Successfully!</h1><p>Your project has been moved to <code>/var/www/</code> and is accessible via <strong>http://$domain</strong></p><p>For more information, visit <a href=\"https://github.com/williamug/site-manager\">Site Manager</a>.</p></body></html>";
+?>
+EOL
+            sudo chown "$CURRENT_USER":www-data "$target_path/index.php"
+            sudo chmod 644 "$target_path/index.php"
+        fi
+    fi
+
+    # Setup Nginx configuration
+    setup_nginx "$domain" "$document_root"
+
+    echo -e "${GREEN}✅ Project successfully moved!${NC}"
+    echo -e "${GREEN}📁 Location: ${target_path}${NC}"
+    echo -e "${GREEN}🌐 URL: http://${domain}${NC}"
+
+    if [ "$is_laravel" = true ]; then
+        echo -e "${YELLOW}💡 Laravel Tips:${NC}"
+        echo "   • Configure your .env file in $target_path"
+        echo "   • Run migrations: php artisan migrate"
+        echo "   • Install npm dependencies: npm install && npm run build"
+    fi
 }
 
 
@@ -350,11 +602,17 @@ setup_nginx() {
     # Validate root_path
     if [ -z "$root_path" ]; then
         echo -e "${RED}Error: root_path is empty!${NC}"
-        exit 1
+        return 1
     fi
 
-    # Debug: Print root_path to verify it's set correctly
-    echo -e "\n${YELLOW}Debug: root_path = ${root_path}${NC}"
+    # Validate that the root path exists
+    if [ ! -d "$root_path" ]; then
+        echo -e "${RED}Error: root_path '$root_path' does not exist!${NC}"
+        return 1
+    fi
+
+    echo -e "\n${YELLOW}Setting up Nginx configuration for ${domain}${NC}"
+    echo "Document root: ${root_path}"
 
     cat << EOF | sudo tee "${NGINX_DIR}/sites-available/${domain}" > /dev/null
 server {
@@ -371,7 +629,7 @@ server {
     charset utf-8;
 
     location / {
-        try_files $uri $uri/ /index.php?$query_string;
+        try_files \$uri \$uri/ /index.php?\$query_string;
     }
 
     location = /favicon.ico { access_log off; log_not_found off; }
@@ -380,9 +638,9 @@ server {
     error_page 404 /index.php;
 
     location ~ \.php$ {
-        fastcgi_pass unix:/var/run/php/php${php_version:-$DEFAULT_PHP_VERSION}-fpm.sock;
+        fastcgi_pass unix:/var/run/php/php$(get_php_version)-fpm.sock;
         fastcgi_index index.php;
-        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
         include fastcgi_params;
     }
 
@@ -394,17 +652,40 @@ server {
     error_log /var/log/nginx/${domain}-error.log;
 }
 EOF
-    echo "Nginx config created at ${NGINX_DIR}/sites-available/${domain}"
-    sudo ln -sf "${NGINX_DIR}/sites-available/${domain}" "${NGINX_DIR}/sites-enabled/${domain}"
-    echo "Symlink created: ${NGINX_DIR}/sites-enabled/${domain}"
-    echo "Adding domain to /etc/hosts..."
-    if ! grep -q "${domain}" /etc/hosts; then
-        echo "127.0.0.1 ${domain}" | sudo tee -a /etc/hosts > /dev/null
+
+    echo "✅ Nginx config created at ${NGINX_DIR}/sites-available/${domain}"
+
+    # Enable the site
+    if sudo ln -sf "${NGINX_DIR}/sites-available/${domain}" "${NGINX_DIR}/sites-enabled/${domain}"; then
+        echo "✅ Site enabled: ${NGINX_DIR}/sites-enabled/${domain}"
     else
-        echo "${domain} already exists in /etc/hosts"
+        echo -e "${RED}❌ Failed to enable site${NC}"
+        return 1
     fi
-    sudo nginx -t && sudo systemctl reload nginx
-    echo "Nginx reloaded."
+
+    # Add domain to /etc/hosts
+    echo "Adding domain to /etc/hosts..."
+    if ! grep -q "127.0.0.1.*${domain}" /etc/hosts; then
+        echo "127.0.0.1 ${domain}" | sudo tee -a /etc/hosts > /dev/null
+        echo "✅ Added ${domain} to /etc/hosts"
+    else
+        echo "✅ ${domain} already exists in /etc/hosts"
+    fi
+
+    # Test and reload Nginx
+    echo "Testing Nginx configuration..."
+    if sudo nginx -t; then
+        echo "✅ Nginx configuration is valid"
+        if sudo systemctl reload nginx; then
+            echo "✅ Nginx reloaded successfully"
+        else
+            echo -e "${RED}❌ Failed to reload Nginx${NC}"
+            return 1
+        fi
+    else
+        echo -e "${RED}❌ Nginx configuration test failed${NC}"
+        return 1
+    fi
 }
 
 backup_site() {
