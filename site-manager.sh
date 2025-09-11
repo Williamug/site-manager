@@ -855,21 +855,45 @@ EOF
 
 backup_site() {
     local domain=$1
+    local CURRENT_USER
+    CURRENT_USER=$(get_current_user)
+    
+    echo -e "${YELLOW}Creating Project Backup${NC}"
+    
+    # Get backup destination
     read -p "Enter custom backup destination (or press Enter to use default [$BACKUP_DIR]): " custom_dest
     if [ -n "$custom_dest" ]; then
         custom_dir="$custom_dest"
     else
         custom_dir="$BACKUP_DIR"
     fi
-    local default_backup_name="${domain}_$(date +%Y%m%d%H%M)"
-    local backup_dir="${custom_dir}/${default_backup_name}"
-    mkdir -p "$custom_dir" || { echo "Failed to create backup directory: $custom_dir"; return 1; }
-    echo -e "${YELLOW}Backup destination: ${custom_dir}/${default_backup_name}{format}${NC}"
+    
+    # Create backup directory if it doesn't exist
+    if ! sudo mkdir -p "$custom_dir"; then
+        echo -e "${RED}❌ Failed to create backup directory: $custom_dir${NC}"
+        return 1
+    fi
+    
+    local default_backup_name="${domain}_$(date +%Y%m%d_%H%M%S)"
+    echo -e "${YELLOW}Backup destination: ${custom_dir}/${default_backup_name}.tar.gz${NC}"
     echo -e "Default backup name: ${default_backup_name} (press Enter to keep)\n"
+    
     read -p "Enter custom backup name [${default_backup_name}]: " backup_name
     backup_name=${backup_name:-$default_backup_name}
-    backup_dir="${custom_dir}/${backup_name}"
-    mkdir -p "$backup_dir"
+    
+    local backup_dir="${custom_dir}/${backup_name}"
+    local backup_file="${backup_dir}.tar.gz"
+    
+    # Check if backup file already exists
+    if [ -f "$backup_file" ]; then
+        echo -e "${YELLOW}Warning: Backup file '$backup_file' already exists.${NC}"
+        read -p "Overwrite existing backup? [y/N] " overwrite
+        if [[ ! "$overwrite" =~ ^[Yy]$ ]]; then
+            echo "Backup cancelled."
+            return 1
+        fi
+    fi
+    
     echo -e "\n${YELLOW}Select backup type (default: 1):${NC}"
     PS3="Enter your choice (1-3): "
     local backup_code=false
@@ -882,63 +906,376 @@ backup_site() {
             *) echo "Using default (Both)"; backup_code=true; backup_db=true; break;;
         esac
     done
+    
+    # Get project directory
     read -p "Enter full path of the project directory to backup: " project_dir
     if [ ! -d "$project_dir" ]; then
-        echo "Project directory does not exist!"
+        echo -e "${RED}❌ Project directory does not exist: $project_dir${NC}"
         return 1
     fi
+    
+    # Create temporary backup directory
     local temp_backup_dir="${backup_dir}_temp"
-    mkdir -p "$temp_backup_dir" || { echo "Failed to create temporary backup directory"; return 1; }
+    if ! mkdir -p "$temp_backup_dir"; then
+        echo -e "${RED}❌ Failed to create temporary backup directory${NC}"
+        return 1
+    fi
+    
+    # Backup project code
     if $backup_code; then
-        cp -a "$project_dir" "$temp_backup_dir/"
+        echo -e "\n${YELLOW}Backing up project files...${NC}"
+        # Use rsync to exclude common large directories
+        if rsync -av --exclude='.git' --exclude='node_modules' --exclude='vendor' --exclude='storage/logs/*' --exclude='storage/framework/cache/*' --exclude='storage/framework/sessions/*' --exclude='storage/framework/views/*' "$project_dir/" "$temp_backup_dir/$(basename "$project_dir")/"; then
+            echo -e "${GREEN}✅ Project files backed up successfully${NC}"
+        else
+            echo -e "${RED}❌ Failed to backup project files${NC}"
+            rm -rf "$temp_backup_dir"
+            return 1
+        fi
     fi
+    
+    # Backup database
     if $backup_db; then
+        echo -e "\n${YELLOW}Backing up database...${NC}"
         read -p "Enter database name: " db_name
-        read -p "Enter database user: " db_user
-        read -s -p "Enter database password: " db_pass
-        echo ""
-        mysqldump -u "$db_user" -p"$db_pass" "$db_name" > "$temp_backup_dir/db_dump.sql"
+        if [ -z "$db_name" ]; then
+            echo -e "${YELLOW}⚠️  No database name provided, skipping database backup${NC}"
+        else
+            read -p "Enter database user: " db_user
+            read -s -p "Enter database password: " db_pass
+            echo ""
+            
+            if [ -n "$db_user" ] && [ -n "$db_pass" ]; then
+                echo "Creating database dump..."
+                if mysqldump -u "$db_user" -p"$db_pass" "$db_name" > "$temp_backup_dir/db_dump.sql" 2>/dev/null; then
+                    echo -e "${GREEN}✅ Database backed up successfully${NC}"
+                else
+                    echo -e "${RED}❌ Failed to backup database${NC}"
+                    echo -e "${YELLOW}⚠️  Continuing with project files backup only...${NC}"
+                fi
+            else
+                echo -e "${YELLOW}⚠️  Database credentials not provided, skipping database backup${NC}"
+            fi
+        fi
     fi
-    tar -czf "${backup_dir}.tar.gz" -C "$(dirname "$temp_backup_dir")" "$(basename "$temp_backup_dir")"
-    rm -rf "$temp_backup_dir"
-    echo -e "${GREEN}Backup created: ${backup_dir}.tar.gz${NC}"
-    echo -e "Full path: $(realpath "${backup_dir}.tar.gz")\n"
+    
+    # Create final backup archive
+    echo -e "\n${YELLOW}Creating backup archive...${NC}"
+    if tar -czf "$backup_file" -C "$(dirname "$temp_backup_dir")" "$(basename "$temp_backup_dir")" 2>/dev/null; then
+        # Clean up temporary directory
+        rm -rf "$temp_backup_dir"
+        
+        # Get backup file size
+        local backup_size=$(du -h "$backup_file" | cut -f1)
+        
+        echo -e "${GREEN}✅ Backup created successfully!${NC}"
+        echo -e "${GREEN}📁 Location: $backup_file${NC}"
+        echo -e "${GREEN}📦 Size: $backup_size${NC}"
+        echo -e "\n${BLUE}💡 To restore this backup, run:${NC}"
+        echo -e "   sudo site-manager restore $backup_file"
+    else
+        echo -e "${RED}❌ Failed to create backup archive${NC}"
+        rm -rf "$temp_backup_dir"
+        return 1
+    fi
 }
 
 restore_site() {
     local backup_file=$1
-    read -p "Enter domain for database restore (if applicable): " restore_domain
-    echo -e "\n${YELLOW}Restoring from: ${backup_file}${NC}"
-    if [[ "$backup_file" == */* ]]; then
-        local restore_dir
-        restore_dir=$(dirname "$backup_file")
-    else
-        local restore_dir="$BACKUP_DIR"
-        echo -e "Using default backup location: $restore_dir"
-    fi
-    if [[ "$backup_file" == *.tar.gz ]]; then
-        tar -xzf "$backup_file" -C "$WEB_ROOT"
-    elif [[ "$backup_file" == *.zip ]]; then
-        unzip "$backup_file" -d "$WEB_ROOT"
-    else
-        echo "Unsupported format - use .tar.gz or .zip"
+    local CURRENT_USER
+    CURRENT_USER=$(get_current_user)
+    
+    echo -e "${YELLOW}Restoring Project from Backup${NC}"
+    
+    # Validate backup file
+    if [ ! -f "$backup_file" ]; then
+        echo -e "${RED}❌ Backup file does not exist: $backup_file${NC}"
         return 1
     fi
-    if [ -n "$restore_domain" ] && [ -f "${WEB_ROOT}/${restore_domain}/db_dump.sql" ]; then
-        read -p "Found database dump for ${restore_domain}. Restore database? [y/N] " restore_db
-        if [[ "$restore_db" =~ ^[Yy] ]]; then
-            mysql -h "$db_host" -u "$db_user" -p"$db_pass" "$db_name" < "${WEB_ROOT}/${restore_domain}/db_dump.sql"
+    
+    # Get domain for restored site
+    read -p "Enter domain name for restored site: " restore_domain
+    if [ -z "$restore_domain" ]; then
+        echo -e "${RED}❌ Domain name is required for restoration${NC}"
+        return 1
+    fi
+    
+    echo -e "\n${YELLOW}Restoring from: ${backup_file}${NC}"
+    
+    # Create temporary extraction directory
+    local temp_extract_dir="/tmp/site_manager_restore_$$"
+    mkdir -p "$temp_extract_dir"
+    
+    # Extract backup
+    echo "Extracting backup archive..."
+    if [[ "$backup_file" == *.tar.gz ]]; then
+        if tar -xzf "$backup_file" -C "$temp_extract_dir" 2>/dev/null; then
+            echo -e "${GREEN}✅ Backup extracted successfully${NC}"
+        else
+            echo -e "${RED}❌ Failed to extract backup archive${NC}"
+            rm -rf "$temp_extract_dir"
+            return 1
+        fi
+    elif [[ "$backup_file" == *.zip ]]; then
+        if unzip -q "$backup_file" -d "$temp_extract_dir" 2>/dev/null; then
+            echo -e "${GREEN}✅ Backup extracted successfully${NC}"
+        else
+            echo -e "${RED}❌ Failed to extract backup archive${NC}"
+            rm -rf "$temp_extract_dir"
+            return 1
+        fi
+    else
+        echo -e "${RED}❌ Unsupported backup format - use .tar.gz or .zip${NC}"
+        rm -rf "$temp_extract_dir"
+        return 1
+    fi
+    
+    # Find the project directory in extraction
+    local extracted_project=$(find "$temp_extract_dir" -mindepth 2 -maxdepth 2 -type d | head -1)
+    if [ -z "$extracted_project" ] || [ ! -d "$extracted_project" ]; then
+        echo -e "${RED}❌ Could not find project directory in backup${NC}"
+        rm -rf "$temp_extract_dir"
+        return 1
+    fi
+    
+    local project_name=$(basename "$extracted_project")
+    local target_path="${WEB_ROOT}/${project_name}"
+    
+    echo "Project name: $project_name"
+    echo "Target path: $target_path"
+    
+    # Check if target already exists
+    if [ -d "$target_path" ]; then
+        echo -e "${YELLOW}Warning: Target directory '$target_path' already exists.${NC}"
+        read -p "Overwrite existing project? [y/N] " overwrite
+        if [[ "$overwrite" =~ ^[Yy]$ ]]; then
+            sudo rm -rf "$target_path"
+        else
+            echo "Restoration cancelled."
+            rm -rf "$temp_extract_dir"
+            return 1
         fi
     fi
-    echo -e "${GREEN}Restore completed!${NC}"
+    
+    # Move project to target location
+    echo "Moving project to target location..."
+    if sudo mv "$extracted_project" "$target_path"; then
+        echo -e "${GREEN}✅ Project files restored${NC}"
+    else
+        echo -e "${RED}❌ Failed to move project files${NC}"
+        rm -rf "$temp_extract_dir"
+        return 1
+    fi
+    
+    # Set proper ownership and permissions
+    sudo chown -R "$CURRENT_USER":www-data "$target_path"
+    sudo find "$target_path" -type d -exec chmod 755 {} \;
+    sudo find "$target_path" -type f -exec chmod 644 {} \;
+    
+    # Detect if it's a Laravel project and set appropriate document root
+    local is_laravel=false
+    local document_root="$target_path"
+    
+    if [ -f "$target_path/artisan" ] && [ -d "$target_path/app" ] && [ -f "$target_path/composer.json" ]; then
+        is_laravel=true
+        document_root="$target_path/public"
+        echo -e "${GREEN}Laravel project detected!${NC}"
+        
+        # Set Laravel-specific permissions
+        for dir in storage bootstrap/cache; do
+            if [ -d "$target_path/$dir" ]; then
+                sudo chown -R "$CURRENT_USER":www-data "$target_path/$dir"
+                sudo find "$target_path/$dir" -type d -exec chmod 775 {} \;
+                sudo find "$target_path/$dir" -type f -exec chmod 664 {} \;
+                sudo chmod -R g+s "$target_path/$dir"
+            fi
+        done
+        
+        # Set execute permissions for artisan
+        if [ -f "$target_path/artisan" ]; then
+            sudo chmod +x "$target_path/artisan"
+        fi
+    fi
+    
+    # Restore database if dump exists
+    local db_dump_file="$temp_extract_dir/$(basename "$temp_extract_dir")/db_dump.sql"
+    if [ -f "$db_dump_file" ]; then
+        echo -e "\n${YELLOW}Database dump found. Restore database? [y/N]${NC}"
+        read -p "" restore_db
+        if [[ "$restore_db" =~ ^[Yy]$ ]]; then
+            read -p "Enter database name: " db_name
+            read -p "Enter database user: " db_user
+            read -s -p "Enter database password: " db_pass
+            echo ""
+            
+            if [ -n "$db_name" ] && [ -n "$db_user" ] && [ -n "$db_pass" ]; then
+                echo "Restoring database..."
+                if mysql -u "$db_user" -p"$db_pass" "$db_name" < "$db_dump_file" 2>/dev/null; then
+                    echo -e "${GREEN}✅ Database restored successfully${NC}"
+                else
+                    echo -e "${RED}❌ Failed to restore database${NC}"
+                fi
+            else
+                echo -e "${YELLOW}⚠️  Database credentials not provided, skipping database restore${NC}"
+            fi
+        fi
+    fi
+    
+    # Clean up extraction directory
+    rm -rf "$temp_extract_dir"
+    
+    # Setup Nginx configuration
+    setup_nginx "$restore_domain" "$document_root"
+    
+    echo -e "${GREEN}✅ Project successfully restored!${NC}"
+    echo -e "${GREEN}📁 Location: ${target_path}${NC}"
+    echo -e "${GREEN}🌐 URL: http://${restore_domain}${NC}"
+    
+    if [ "$is_laravel" = true ]; then
+        echo -e "${YELLOW}💡 Laravel Tips:${NC}"
+        echo "   • Check your .env file configuration"
+        echo "   • Run composer install if needed"
+        echo "   • Run migrations: php artisan migrate"
+    fi
 }
 
 setup_ssl() {
     local domain=$1
-    sudo apt install -y certbot python3-certbot-nginx
-    sudo certbot --nginx -d "$domain" --register-unsafely-without-email --agree-tos
-    sudo systemctl reload nginx
-    echo -e "${GREEN}SSL certificate installed for ${domain}${NC}"
+    
+    echo -e "${YELLOW}Setting up SSL Certificate${NC}"
+    
+    # Validate domain parameter
+    if [ -z "$domain" ]; then
+        echo -e "${RED}❌ Domain name is required${NC}"
+        return 1
+    fi
+    
+    # Check if nginx config exists for this domain
+    local nginx_config="/etc/nginx/sites-available/$domain"
+    if [ ! -f "$nginx_config" ]; then
+        echo -e "${RED}❌ Nginx configuration not found for domain: $domain${NC}"
+        echo -e "${YELLOW}💡 Please create the site first using site-manager${NC}"
+        return 1
+    fi
+    
+    # Check if nginx config is enabled
+    if [ ! -L "/etc/nginx/sites-enabled/$domain" ]; then
+        echo -e "${YELLOW}⚠️  Nginx site is not enabled. Enabling now...${NC}"
+        sudo ln -sf "$nginx_config" "/etc/nginx/sites-enabled/$domain"
+        sudo nginx -t && sudo systemctl reload nginx
+    fi
+    
+    # Check if certbot is installed
+    if ! command -v certbot &>/dev/null; then
+        echo -e "${YELLOW}Installing Certbot and Nginx plugin...${NC}"
+        if sudo apt update && sudo apt install -y certbot python3-certbot-nginx; then
+            echo -e "${GREEN}✅ Certbot installed successfully${NC}"
+        else
+            echo -e "${RED}❌ Failed to install Certbot${NC}"
+            return 1
+        fi
+    else
+        echo -e "${GREEN}✅ Certbot is already installed${NC}"
+    fi
+    
+    # Prompt for email (required for Let's Encrypt)
+    echo -e "\n${YELLOW}Let's Encrypt requires an email address for certificate registration${NC}"
+    echo -e "${BLUE}This email will be used for:${NC}"
+    echo "• Certificate expiry notifications"
+    echo "• Important security updates"
+    echo "• Account recovery"
+    
+    while true; do
+        read -p "Enter your email address: " email
+        if [ -z "$email" ]; then
+            read -p "Skip email registration? [y/N] " skip_email
+            if [[ "$skip_email" =~ ^[Yy]$ ]]; then
+                email_flag="--register-unsafely-without-email"
+                break
+            else
+                echo -e "${RED}Email address is required${NC}"
+                continue
+            fi
+        elif [[ "$email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+            email_flag="--email $email"
+            break
+        else
+            echo -e "${RED}Please enter a valid email address${NC}"
+        fi
+    done
+    
+    # Test nginx configuration before proceeding
+    echo -e "\n${YELLOW}Testing Nginx configuration...${NC}"
+    if ! sudo nginx -t; then
+        echo -e "${RED}❌ Nginx configuration test failed${NC}"
+        echo -e "${YELLOW}Please fix nginx configuration before setting up SSL${NC}"
+        return 1
+    fi
+    
+    # Check if domain is accessible (optional but recommended)
+    echo -e "${YELLOW}Checking domain accessibility...${NC}"
+    if curl -s --connect-timeout 5 "http://$domain" > /dev/null; then
+        echo -e "${GREEN}✅ Domain is accessible${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Warning: Domain might not be accessible from the internet${NC}"
+        echo -e "${BLUE}For Let's Encrypt to work, your domain must be:${NC}"
+        echo "• Pointing to this server's public IP"
+        echo "• Accessible from the internet on port 80"
+        
+        read -p "Continue anyway? [y/N] " continue_ssl
+        if [[ ! "$continue_ssl" =~ ^[Yy]$ ]]; then
+            echo "SSL setup cancelled."
+            return 1
+        fi
+    fi
+    
+    # Request SSL certificate
+    echo -e "\n${YELLOW}Requesting SSL certificate for $domain...${NC}"
+    local certbot_cmd="sudo certbot --nginx -d $domain $email_flag --agree-tos --non-interactive"
+    
+    # Add staging flag for testing (uncomment for testing)
+    # certbot_cmd="$certbot_cmd --staging"
+    
+    echo "Running: $certbot_cmd"
+    if $certbot_cmd; then
+        echo -e "${GREEN}✅ SSL certificate installed successfully!${NC}"
+        
+        # Reload nginx to ensure new config is active
+        if sudo systemctl reload nginx; then
+            echo -e "${GREEN}✅ Nginx reloaded with SSL configuration${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Warning: Failed to reload Nginx${NC}"
+        fi
+        
+        # Test HTTPS
+        echo -e "\n${YELLOW}Testing HTTPS connection...${NC}"
+        if curl -s --connect-timeout 5 "https://$domain" > /dev/null; then
+            echo -e "${GREEN}✅ HTTPS is working correctly${NC}"
+        else
+            echo -e "${YELLOW}⚠️  HTTPS test failed - certificate might still be propagating${NC}"
+        fi
+        
+        echo -e "\n${GREEN}🎉 SSL setup completed successfully!${NC}"
+        echo -e "${BLUE}💡 Important Information:${NC}"
+        echo -e "• Your site is now available at: https://$domain"
+        echo -e "• HTTP traffic will be automatically redirected to HTTPS"
+        echo -e "• Certificate will auto-renew (Let's Encrypt handles this)"
+        echo -e "• You can test renewal with: sudo certbot renew --dry-run"
+        
+    else
+        echo -e "${RED}❌ Failed to obtain SSL certificate${NC}"
+        echo -e "${BLUE}💡 Common issues:${NC}"
+        echo "• Domain not pointing to this server"
+        echo "• Firewall blocking port 80/443"
+        echo "• Domain not accessible from internet"
+        echo "• Rate limiting (try again later)"
+        
+        # Check certbot logs for more details
+        echo -e "\n${YELLOW}Check certbot logs for details:${NC}"
+        echo "  sudo tail -f /var/log/letsencrypt/letsencrypt.log"
+        
+        return 1
+    fi
 }
 
 # ---------- Main Program ----------
