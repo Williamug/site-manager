@@ -1479,7 +1479,331 @@ setup_ssl() {
     fi
 }
 
+update_ssl() {
+    local domain=$1
+    local CURRENT_USER
+    CURRENT_USER=$(get_current_user)
 
+    echo -e "${YELLOW}Update/Renew SSL Certificate${NC}"
+
+    # Get domain if not provided
+    if [ -z "$domain" ]; then
+        echo -e "\n${BLUE}Available domains with SSL certificates:${NC}"
+        if [ -d "/etc/letsencrypt/live" ]; then
+            local count=1
+            local domains=()
+
+            for cert_dir in /etc/letsencrypt/live/*; do
+                if [ -d "$cert_dir" ] && [ "$(basename "$cert_dir")" != "README" ]; then
+                    local domain_name=$(basename "$cert_dir")
+                    domains[count]="$domain_name"
+
+                    # Check certificate expiry
+                    local cert_file="$cert_dir/cert.pem"
+                    if [ -f "$cert_file" ]; then
+                        local expiry_date=$(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2)
+                        local days_left=$(( ($(date -d "$expiry_date" +%s) - $(date +%s)) / 86400 ))
+
+                        if [ $days_left -lt 30 ]; then
+                            echo "  $count) $domain_name ${RED}(expires in $days_left days)${NC}"
+                        elif [ $days_left -lt 60 ]; then
+                            echo "  $count) $domain_name ${YELLOW}(expires in $days_left days)${NC}"
+                        else
+                            echo "  $count) $domain_name ${GREEN}(expires in $days_left days)${NC}"
+                        fi
+                    else
+                        echo "  $count) $domain_name (unable to check expiry)"
+                    fi
+                    ((count++))
+                fi
+            done
+
+            if [ ${#domains[@]} -eq 0 ]; then
+                echo -e "${RED}❌ No SSL certificates found${NC}"
+                return 1
+            fi
+
+            echo -e "\n${YELLOW}Select a domain or enter domain name:${NC}"
+            read -p "Enter domain number (1-$((count-1))) or domain name: " selection
+
+            # Check if selection is a number
+            if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -lt "$count" ]; then
+                domain="${domains[$selection]}"
+            else
+                domain="$selection"
+            fi
+        else
+            read -p "Enter domain name: " domain
+        fi
+    fi
+
+    # Validate domain
+    if [ -z "$domain" ]; then
+        echo -e "${RED}❌ Domain name is required${NC}"
+        return 1
+    fi
+
+    # Check if certificate exists
+    if [ ! -d "/etc/letsencrypt/live/$domain" ]; then
+        echo -e "${RED}❌ No SSL certificate found for domain: $domain${NC}"
+        echo -e "${YELLOW}💡 Use 'Setup SSL' to create a new certificate${NC}"
+        return 1
+    fi
+
+    local cert_file="/etc/letsencrypt/live/$domain/cert.pem"
+
+    # Display current certificate information
+    echo -e "\n${BLUE}Current certificate information for $domain:${NC}"
+    if [ -f "$cert_file" ]; then
+        local issuer=$(openssl x509 -in "$cert_file" -noout -issuer | sed 's/.*CN=\([^,]*\).*/\1/')
+        local subject=$(openssl x509 -in "$cert_file" -noout -subject | sed 's/.*CN=\([^,]*\).*/\1/')
+        local not_before=$(openssl x509 -in "$cert_file" -noout -startdate | cut -d= -f2)
+        local not_after=$(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2)
+        local days_left=$(( ($(date -d "$not_after" +%s) - $(date +%s)) / 86400 ))
+
+        echo "  Subject: $subject"
+        echo "  Issuer: $issuer"
+        echo "  Valid from: $not_before"
+        echo "  Valid until: $not_after"
+
+        if [ $days_left -lt 0 ]; then
+            echo -e "  Status: ${RED}❌ EXPIRED ($((0 - days_left)) days ago)${NC}"
+        elif [ $days_left -lt 7 ]; then
+            echo -e "  Status: ${RED}⚠️  CRITICAL - Expires in $days_left days${NC}"
+        elif [ $days_left -lt 30 ]; then
+            echo -e "  Status: ${YELLOW}⚠️  WARNING - Expires in $days_left days${NC}"
+        else
+            echo -e "  Status: ${GREEN}✅ Valid for $days_left more days${NC}"
+        fi
+    fi
+
+    echo -e "\n${YELLOW}What would you like to do?${NC}"
+    echo "1) Renew certificate (recommended for expiring certs)"
+    echo "2) Force certificate renewal (recreate certificate)"
+    echo "3) Test certificate renewal (dry run)"
+    echo "4) Expand certificate (add more domains)"
+    echo "5) Check all certificates status"
+    echo "6) Cancel"
+
+    read -p "Select option [1-6]: " ssl_choice
+
+    case $ssl_choice in
+        1)
+            echo -e "\n${YELLOW}Renewing SSL certificate for $domain...${NC}"
+            renew_certificate "$domain"
+            ;;
+        2)
+            echo -e "\n${YELLOW}Force renewing SSL certificate for $domain...${NC}"
+            force_renew_certificate "$domain"
+            ;;
+        3)
+            echo -e "\n${YELLOW}Testing certificate renewal (dry run)...${NC}"
+            test_certificate_renewal "$domain"
+            ;;
+        4)
+            echo -e "\n${YELLOW}Expanding certificate to include more domains...${NC}"
+            expand_certificate "$domain"
+            ;;
+        5)
+            echo -e "\n${YELLOW}Checking all certificates status...${NC}"
+            check_all_certificates
+            ;;
+        6)
+            echo "Operation cancelled."
+            return 0
+            ;;
+        *)
+            echo -e "${RED}❌ Invalid option${NC}"
+            return 1
+            ;;
+    esac
+}
+
+renew_certificate() {
+    local domain=$1
+
+    echo "Attempting to renew certificate for $domain..."
+
+    if sudo certbot renew --cert-name "$domain"; then
+        echo -e "${GREEN}✅ Certificate renewed successfully!${NC}"
+
+        # Reload nginx
+        if sudo systemctl reload nginx; then
+            echo -e "${GREEN}✅ Nginx reloaded${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Warning: Failed to reload Nginx${NC}"
+        fi
+
+        # Test the renewed certificate
+        echo -e "\n${YELLOW}Testing renewed certificate...${NC}"
+        if curl -s --connect-timeout 5 "https://$domain" > /dev/null; then
+            echo -e "${GREEN}✅ HTTPS is working correctly${NC}"
+        else
+            echo -e "${YELLOW}⚠️  HTTPS test failed${NC}"
+        fi
+
+    else
+        echo -e "${RED}❌ Certificate renewal failed${NC}"
+        echo -e "${YELLOW}💡 Certificate might not be due for renewal yet${NC}"
+        echo -e "${BLUE}Certificates are automatically renewed when they have 30 days or less remaining${NC}"
+        return 1
+    fi
+}
+
+force_renew_certificate() {
+    local domain=$1
+
+    echo -e "${RED}⚠️  WARNING: This will force renewal even if not needed${NC}"
+    read -p "Are you sure you want to force renew? [y/N] " confirm
+
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Operation cancelled."
+        return 0
+    fi
+
+    echo "Force renewing certificate for $domain..."
+
+    if sudo certbot renew --cert-name "$domain" --force-renewal; then
+        echo -e "${GREEN}✅ Certificate force renewed successfully!${NC}"
+
+        # Reload nginx
+        if sudo systemctl reload nginx; then
+            echo -e "${GREEN}✅ Nginx reloaded${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Warning: Failed to reload Nginx${NC}"
+        fi
+
+    else
+        echo -e "${RED}❌ Certificate force renewal failed${NC}"
+        return 1
+    fi
+}
+
+test_certificate_renewal() {
+    local domain=$1
+
+    echo "Testing certificate renewal for $domain (dry run)..."
+
+    if sudo certbot renew --cert-name "$domain" --dry-run; then
+        echo -e "${GREEN}✅ Certificate renewal test passed!${NC}"
+        echo -e "${BLUE}Your certificate can be renewed successfully when needed${NC}"
+    else
+        echo -e "${RED}❌ Certificate renewal test failed${NC}"
+        echo -e "${YELLOW}There might be issues with your domain configuration${NC}"
+        return 1
+    fi
+}
+
+expand_certificate() {
+    local domain=$1
+
+    echo "Current certificate covers: $domain"
+    echo -e "\n${YELLOW}Enter additional domains to add to this certificate:${NC}"
+    echo -e "${BLUE}Examples: www.$domain, api.$domain, admin.$domain${NC}"
+    echo -e "${YELLOW}Enter domains separated by spaces:${NC}"
+
+    read -p "Additional domains: " additional_domains
+
+    if [ -z "$additional_domains" ]; then
+        echo "No additional domains specified."
+        return 0
+    fi
+
+    # Build the certbot command with all domains
+    local all_domains="$domain $additional_domains"
+    local domain_flags=""
+
+    for d in $all_domains; do
+        domain_flags="$domain_flags -d $d"
+    done
+
+    echo -e "\n${YELLOW}Expanding certificate to cover: $all_domains${NC}"
+    read -p "Continue? [y/N] " confirm
+
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Operation cancelled."
+        return 0
+    fi
+
+    # Use --expand flag to add domains to existing certificate
+    if sudo certbot --nginx $domain_flags --expand --non-interactive; then
+        echo -e "${GREEN}✅ Certificate expanded successfully!${NC}"
+        echo -e "${GREEN}Certificate now covers: $all_domains${NC}"
+
+        # Reload nginx
+        if sudo systemctl reload nginx; then
+            echo -e "${GREEN}✅ Nginx reloaded${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Warning: Failed to reload Nginx${NC}"
+        fi
+
+    else
+        echo -e "${RED}❌ Certificate expansion failed${NC}"
+        echo -e "${YELLOW}💡 Make sure all domains point to this server and are accessible${NC}"
+        return 1
+    fi
+}
+
+check_all_certificates() {
+    echo -e "${BLUE}Checking all SSL certificates...${NC}\n"
+
+    if [ ! -d "/etc/letsencrypt/live" ]; then
+        echo -e "${RED}❌ No certificates directory found${NC}"
+        return 1
+    fi
+
+    local cert_count=0
+    local expiring_soon=0
+    local expired=0
+
+    for cert_dir in /etc/letsencrypt/live/*; do
+        if [ -d "$cert_dir" ] && [ "$(basename "$cert_dir")" != "README" ]; then
+            local domain_name=$(basename "$cert_dir")
+            local cert_file="$cert_dir/cert.pem"
+
+            if [ -f "$cert_file" ]; then
+                cert_count=$((cert_count + 1))
+
+                local not_after=$(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2)
+                local days_left=$(( ($(date -d "$not_after" +%s) - $(date +%s)) / 86400 ))
+
+                printf "%-30s " "$domain_name"
+
+                if [ $days_left -lt 0 ]; then
+                    echo -e "${RED}❌ EXPIRED ($((0 - days_left)) days ago)${NC}"
+                    expired=$((expired + 1))
+                elif [ $days_left -lt 7 ]; then
+                    echo -e "${RED}⚠️  CRITICAL - $days_left days left${NC}"
+                    expiring_soon=$((expiring_soon + 1))
+                elif [ $days_left -lt 30 ]; then
+                    echo -e "${YELLOW}⚠️  WARNING - $days_left days left${NC}"
+                    expiring_soon=$((expiring_soon + 1))
+                else
+                    echo -e "${GREEN}✅ Valid for $days_left days${NC}"
+                fi
+            fi
+        fi
+    done
+
+    echo -e "\n${BLUE}Summary:${NC}"
+    echo "  Total certificates: $cert_count"
+    echo "  Expiring soon (< 30 days): $expiring_soon"
+    echo "  Expired: $expired"
+
+    if [ $expired -gt 0 ] || [ $expiring_soon -gt 0 ]; then
+        echo -e "\n${YELLOW}💡 Recommended actions:${NC}"
+        if [ $expired -gt 0 ]; then
+            echo "  • Renew expired certificates immediately"
+        fi
+        if [ $expiring_soon -gt 0 ]; then
+            echo "  • Schedule renewal for expiring certificates"
+        fi
+        echo "  • Set up automatic renewal: sudo crontab -e"
+        echo "    Add: 0 12 * * * /usr/bin/certbot renew --quiet"
+    else
+        echo -e "\n${GREEN}✅ All certificates are healthy!${NC}"
+    fi
+}
 
 fix_permissions() {
     local CURRENT_USER
@@ -1857,6 +2181,9 @@ case "$1" in
     ssl)
         setup_ssl "$2"
         ;;
+    update-ssl)
+        update_ssl "$2"
+        ;;
     configure)
         configure_existing_project
         ;;
@@ -1876,8 +2203,9 @@ case "$1" in
             echo "7) Setup SSL"
             echo "8) Configure Existing Project"
             echo "9) Fix Project Permissions"
-            echo "10) Exit"
-            read -p "Select operation [1-10]: " choice
+            echo "10) Update/Renew SSL Certificate"
+            echo "11) Exit"
+            read -p "Select operation [1-11]: " choice
             case $choice in
                 1) create_site ;;
                 2) delete_site ;;
@@ -1888,7 +2216,8 @@ case "$1" in
                 7) read -p "Enter domain for SSL: " d; setup_ssl "$d" ;;
                 8) configure_existing_project ;;
                 9) fix_permissions ;;
-                10) exit 0 ;;
+                10) update_ssl ;;
+                11) exit 0 ;;
                 *) echo "Invalid option!" ;;
             esac
             read -p "Press Enter to continue..."
