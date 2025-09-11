@@ -583,16 +583,181 @@ EOL
 clone_project() {
     local CURRENT_USER
     CURRENT_USER=$(get_current_user)
-    read -p "Git repository URL: " repo_url
-    read -p "Enter domain name: " domain
-    project_name=$(basename "$repo_url" .git)
+    
+    echo -e "${YELLOW}Cloning Project from GitHub${NC}"
+    
+    # Get and validate repository URL
+    while true; do
+        read -p "Git repository URL: " repo_url
+        if [ -z "$repo_url" ]; then
+            echo -e "${RED}Error: Repository URL cannot be empty${NC}"
+            continue
+        fi
+        
+        # Basic URL validation
+        if [[ "$repo_url" =~ ^(https?://|git@) ]]; then
+            break
+        else
+            echo -e "${YELLOW}Warning: '$repo_url' doesn't look like a valid Git URL. Continue anyway? [y/N]${NC}"
+            read -p "" confirm
+            if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                break
+            fi
+        fi
+    done
+    
+    # Get and validate domain name
+    while true; do
+        read -p "Enter domain name: " domain
+        if [ -z "$domain" ] || [ "$domain" = "exit" ]; then
+            echo -e "${RED}Error: Please enter a valid domain name${NC}"
+            continue
+        fi
+        # Basic domain validation
+        if [[ "$domain" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] || [[ "$domain" =~ \.test$ ]] || [[ "$domain" =~ \.local$ ]]; then
+            break
+        else
+            echo -e "${YELLOW}Warning: '$domain' doesn't look like a valid domain. Continue anyway? [y/N]${NC}"
+            read -p "" confirm
+            if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                break
+            fi
+        fi
+    done
+    
+    # Extract project name from repository URL
+    if [[ "$repo_url" =~ git@github\.com:(.+)\.git$ ]]; then
+        # SSH URL: git@github.com:user/repo.git
+        project_name=$(echo "${BASH_REMATCH[1]}" | cut -d'/' -f2)
+    elif [[ "$repo_url" =~ https?://[^/]+/(.+)\.git$ ]]; then
+        # HTTPS URL: https://github.com/user/repo.git
+        project_name=$(echo "${BASH_REMATCH[1]}" | cut -d'/' -f2)
+    else
+        # Fallback: use basename
+        project_name=$(basename "$repo_url" .git)
+    fi
+    
     target_path="${WEB_ROOT}/${project_name}"
-    sudo mkdir -p "$target_path"
+    
+    echo "Project name: $project_name"
+    echo "Target path: $target_path"
+    
+    # Check if target directory already exists
+    if [ -d "$target_path" ]; then
+        echo -e "${YELLOW}Warning: Target directory '$target_path' already exists.${NC}"
+        read -p "Remove existing directory and continue? [y/N] " overwrite
+        if [[ "$overwrite" =~ ^[Yy]$ ]]; then
+            sudo rm -rf "$target_path"
+        else
+            echo "Operation cancelled."
+            return 1
+        fi
+    fi
+    
+    # Create parent directory
+    sudo mkdir -p "$(dirname "$target_path")"
+    
+    # Clone the repository
+    echo -e "\n${YELLOW}Cloning repository...${NC}"
+    if sudo -u "$CURRENT_USER" git clone "$repo_url" "$target_path"; then
+        echo -e "${GREEN}✅ Repository cloned successfully${NC}"
+    else
+        echo -e "${RED}❌ Failed to clone repository${NC}"
+        return 1
+    fi
+    
+    # Set basic ownership and permissions
     sudo chown -R "$CURRENT_USER":www-data "$target_path"
-    sudo chmod -R 775 "$target_path"
-    sudo -u "$CURRENT_USER" git clone "$repo_url" "$target_path"
-    setup_nginx "$domain" "$target_path"
-    echo -e "${GREEN}Project cloned to: ${target_path}${NC}"
+    sudo find "$target_path" -type d -exec chmod 755 {} \;
+    sudo find "$target_path" -type f -exec chmod 644 {} \;
+    
+    # Detect if it's a Laravel project
+    local is_laravel=false
+    local document_root="$target_path"
+    
+    if [ -f "$target_path/artisan" ] && [ -d "$target_path/app" ] && [ -f "$target_path/composer.json" ]; then
+        is_laravel=true
+        document_root="$target_path/public"
+        echo -e "${GREEN}Laravel project detected!${NC}"
+        
+        # Set Laravel-specific permissions
+        echo "Setting Laravel permissions..."
+        for dir in storage bootstrap/cache; do
+            if [ -d "$target_path/$dir" ]; then
+                sudo chown -R "$CURRENT_USER":www-data "$target_path/$dir"
+                sudo find "$target_path/$dir" -type d -exec chmod 775 {} \;
+                sudo find "$target_path/$dir" -type f -exec chmod 664 {} \;
+                sudo chmod -R g+s "$target_path/$dir"
+            fi
+        done
+        
+        # Handle database directory if exists
+        if [ -d "$target_path/database" ]; then
+            sudo chown -R "$CURRENT_USER":www-data "$target_path/database"
+            sudo find "$target_path/database" -type d -exec chmod 775 {} \;
+            sudo find "$target_path/database" -type f -exec chmod 664 {} \;
+            sudo chmod -R g+s "$target_path/database"
+        fi
+        
+        # Set execute permissions for artisan
+        if [ -f "$target_path/artisan" ]; then
+            sudo chmod +x "$target_path/artisan"
+        fi
+        
+        # Install Composer dependencies
+        if [ -f "$target_path/composer.json" ]; then
+            echo "Installing Composer dependencies..."
+            if sudo -u "$CURRENT_USER" bash -c "cd '$target_path' && composer install --no-dev --optimize-autoloader"; then
+                echo -e "${GREEN}✅ Composer dependencies installed${NC}"
+            else
+                echo -e "${YELLOW}⚠️  Failed to install Composer dependencies${NC}"
+            fi
+        fi
+        
+        # Create .env if .env.example exists
+        if [ -f "$target_path/.env.example" ] && [ ! -f "$target_path/.env" ]; then
+            echo "Creating .env file from .env.example..."
+            sudo -u "$CURRENT_USER" cp "$target_path/.env.example" "$target_path/.env"
+            sudo -u "$CURRENT_USER" bash -c "cd '$target_path' && php artisan key:generate --ansi"
+        fi
+        
+        # Install NPM dependencies if package.json exists
+        if [ -f "$target_path/package.json" ]; then
+            echo "Installing NPM dependencies..."
+            if sudo -u "$CURRENT_USER" bash -c "cd '$target_path' && npm install"; then
+                echo -e "${GREEN}✅ NPM dependencies installed${NC}"
+            else
+                echo -e "${YELLOW}⚠️  Failed to install NPM dependencies${NC}"
+            fi
+        fi
+    else
+        echo "Standard project detected."
+        # Create index.php if no index file exists
+        if [ ! -f "$target_path/index.php" ] && [ ! -f "$target_path/index.html" ]; then
+            echo "Creating welcome index.php..."
+            sudo bash -c "cat > '$target_path/index.php'" <<EOL
+<?php
+echo "<html><head><title>Welcome to $domain</title><style>body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; background: #f5f5f5; }</style></head><body><h1>Project Cloned Successfully!</h1><p>Your project has been cloned from GitHub and is accessible via <strong>http://$domain</strong></p><p>For more information, visit <a href=\"https://github.com/williamug/site-manager\">Site Manager</a>.</p></body></html>";
+?>
+EOL
+            sudo chown "$CURRENT_USER":www-data "$target_path/index.php"
+            sudo chmod 644 "$target_path/index.php"
+        fi
+    fi
+    
+    # Setup Nginx configuration
+    setup_nginx "$domain" "$document_root"
+    
+    echo -e "${GREEN}✅ Project successfully cloned!${NC}"
+    echo -e "${GREEN}📁 Location: ${target_path}${NC}"
+    echo -e "${GREEN}🌐 URL: http://${domain}${NC}"
+    
+    if [ "$is_laravel" = true ]; then
+        echo -e "${YELLOW}💡 Laravel Tips:${NC}"
+        echo "   • Configure your .env file in $target_path"
+        echo "   • Run migrations: php artisan migrate"
+        echo "   • Build assets: npm run build"
+    fi
 }
 
 setup_nginx() {
