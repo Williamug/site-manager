@@ -1805,6 +1805,8 @@ check_all_certificates() {
     fi
 }
 
+
+
 fix_permissions() {
     local CURRENT_USER
     CURRENT_USER=$(get_current_user)
