@@ -1878,7 +1878,7 @@ fix_permissions() {
     echo ""
     echo -e "${GREEN}1) Quick Fix (recommended)${NC} - Fix common permission issues"
     echo -e "   ${BLUE}What it does:${NC}"
-    echo -e "   • Sets owner to your user (williamdk) and group to www-data"
+    echo -e "   • Sets owner to your user (${USER}) and group to www-data"
     echo -e "   • Directories: 755 (you: read/write/execute, others: read/execute)"
     echo -e "   • Files: 644 (you: read/write, others: read only)"
     echo -e "   • Laravel storage/cache: 775 (group writable for web server)"
