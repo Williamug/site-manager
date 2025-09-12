@@ -67,6 +67,286 @@ get_current_user() {
     fi
 }
 
+# Function to check available memory
+check_memory() {
+    local available_mb=$(free -m | awk 'NR==2{printf "%.0f", $7}')
+    echo "$available_mb"
+}
+
+# Function to create swap if needed for low memory systems
+ensure_swap() {
+    local mem_mb=$(check_memory)
+    echo -e "\n${BLUE}Checking system memory: ${mem_mb}MB available${NC}"
+
+    if [ "$mem_mb" -lt 512 ]; then
+        echo -e "${YELLOW}⚠️  Low memory detected. Checking swap space...${NC}"
+
+        local swap_mb=$(free -m | awk 'NR==3{printf "%.0f", $2}')
+        echo "Current swap: ${swap_mb}MB"
+
+        if [ "$swap_mb" -lt 1024 ]; then
+            echo -e "${YELLOW}Creating temporary swap file for installation...${NC}"
+
+            # Check if swap file already exists
+            if [ ! -f /swapfile ]; then
+                read -p "Create 1GB swap file to help with installation? [Y/n] " create_swap
+                if [[ ! "$create_swap" =~ ^[Nn]$ ]]; then
+                    if sudo fallocate -l 1G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1024 count=1048576 2>/dev/null; then
+                        sudo chmod 600 /swapfile
+                        sudo mkswap /swapfile >/dev/null 2>&1
+                        sudo swapon /swapfile
+                        echo -e "${GREEN}✅ Temporary swap created successfully${NC}"
+                        echo -e "${BLUE}💡 Swap will be removed after installation${NC}"
+                        return 0
+                    else
+                        echo -e "${YELLOW}⚠️  Failed to create swap, continuing anyway...${NC}"
+                    fi
+                fi
+            else
+                echo -e "${GREEN}✅ Swap file already exists${NC}"
+            fi
+        else
+            echo -e "${GREEN}✅ Sufficient swap space available${NC}"
+        fi
+    else
+        echo -e "${GREEN}✅ Sufficient memory available${NC}"
+    fi
+}
+
+# Function to cleanup temporary swap
+cleanup_temp_swap() {
+    if [ -f /swapfile ]; then
+        read -p "Remove temporary swap file? [Y/n] " remove_swap
+        if [[ ! "$remove_swap" =~ ^[Nn]$ ]]; then
+            sudo swapoff /swapfile 2>/dev/null || true
+            sudo rm -f /swapfile
+            echo -e "${GREEN}✅ Temporary swap removed${NC}"
+        fi
+    fi
+}
+
+# Enhanced MySQL installation with low-memory handling
+install_mysql() {
+    echo -e "\n${YELLOW}Installing MySQL with memory optimization...${NC}"
+
+    # Check if MySQL is already installed
+    if command -v mysqld &>/dev/null; then
+        echo -e "${GREEN}✅ MySQL is already installed${NC}"
+        return 0
+    fi
+
+    # Pre-configure MySQL to reduce memory usage during installation
+    echo -e "${BLUE}Configuring MySQL for low-memory installation...${NC}"
+
+    # Create temporary MySQL config for installation
+    sudo mkdir -p /etc/mysql/conf.d
+    cat << EOF | sudo tee /etc/mysql/conf.d/low-memory.cnf > /dev/null
+[mysqld]
+innodb_buffer_pool_size = 64M
+innodb_log_file_size = 32M
+innodb_log_buffer_size = 4M
+query_cache_size = 16M
+table_open_cache = 64
+sort_buffer_size = 512K
+net_buffer_length = 16K
+read_buffer_size = 256K
+read_rnd_buffer_size = 512K
+myisam_sort_buffer_size = 8M
+thread_stack = 256K
+tmp_table_size = 32M
+max_heap_table_size = 32M
+EOF
+
+    # Set DEBIAN_FRONTEND to avoid interactive prompts
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Try installing MySQL with retries
+    local mysql_installed=false
+    local attempts=0
+    local max_attempts=3
+
+    while [ $attempts -lt $max_attempts ] && [ "$mysql_installed" = false ]; do
+        attempts=$((attempts + 1))
+        echo -e "${YELLOW}MySQL installation attempt $attempts/$max_attempts...${NC}"
+
+        # Clear any previous failed installations
+        if [ $attempts -gt 1 ]; then
+            echo "Cleaning up previous installation attempt..."
+            sudo apt-get purge -y mysql* >/dev/null 2>&1 || true
+            sudo apt-get autoremove -y >/dev/null 2>&1 || true
+            sudo rm -rf /var/lib/mysql >/dev/null 2>&1 || true
+        fi
+
+        # Install with memory-conscious approach
+        if sudo apt-get install -y mysql-server 2>/dev/null; then
+            mysql_installed=true
+            echo -e "${GREEN}✅ MySQL installed successfully${NC}"
+        else
+            echo -e "${RED}❌ MySQL installation attempt $attempts failed${NC}"
+
+            if [ $attempts -lt $max_attempts ]; then
+                echo -e "${YELLOW}Waiting 30 seconds before retry...${NC}"
+                sleep 30
+
+                # Try to free up memory
+                echo "Clearing system caches..."
+                sudo sync
+                echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null 2>&1 || true
+            fi
+        fi
+    done
+
+    if [ "$mysql_installed" = false ]; then
+        echo -e "${RED}❌ Failed to install MySQL after $max_attempts attempts${NC}"
+        echo -e "${YELLOW}💡 Alternative options:${NC}"
+        echo "   • Try installing MariaDB instead: sudo apt install mariadb-server"
+        echo "   • Skip MySQL for now and install it later manually"
+        echo "   • Increase server memory or add permanent swap"
+
+        read -p "Continue without MySQL? [y/N] " skip_mysql
+        if [[ "$skip_mysql" =~ ^[Yy]$ ]]; then
+            echo -e "${YELLOW}⚠️  Skipping MySQL installation${NC}"
+            return 0
+        else
+            return 1
+        fi
+    fi
+
+    # Start and enable MySQL
+    echo "Starting MySQL service..."
+    if sudo systemctl enable mysql && sudo systemctl start mysql; then
+        echo -e "${GREEN}✅ MySQL service started successfully${NC}"
+
+        # Wait for MySQL to be ready
+        echo "Waiting for MySQL to be ready..."
+        local wait_count=0
+        while ! sudo mysqladmin ping >/dev/null 2>&1 && [ $wait_count -lt 30 ]; do
+            sleep 2
+            wait_count=$((wait_count + 1))
+            echo -n "."
+        done
+        echo ""
+
+        if sudo mysqladmin ping >/dev/null 2>&1; then
+            echo -e "${GREEN}✅ MySQL is ready${NC}"
+
+            # Prompt for MySQL root password
+            echo -e "\n${YELLOW}Setting up MySQL security...${NC}"
+            read -s -p "Enter a password for MySQL root user: " db_root_pass
+            echo ""
+
+            if [ -n "$db_root_pass" ]; then
+                # Set MySQL root password
+                if sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$db_root_pass'; FLUSH PRIVILEGES;" 2>/dev/null; then
+                    echo -e "${GREEN}✅ MySQL root password set successfully${NC}"
+
+                    read -p "Run MySQL secure installation? [Y/n] " run_secure
+                    if [[ ! "$run_secure" =~ ^[Nn]$ ]]; then
+                        echo -e "${YELLOW}Running MySQL secure installation...${NC}"
+                        sudo mysql_secure_installation
+                    fi
+                else
+                    echo -e "${YELLOW}⚠️  Could not set MySQL root password automatically${NC}"
+                    echo -e "${BLUE}You can set it manually later with: sudo mysql_secure_installation${NC}"
+                fi
+            else
+                echo -e "${YELLOW}No password set for MySQL root user${NC}"
+                echo -e "${BLUE}You can set it later with: sudo mysql_secure_installation${NC}"
+            fi
+        else
+            echo -e "${YELLOW}⚠️  MySQL started but not responding to ping${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠️  MySQL installed but failed to start automatically${NC}"
+        echo -e "${BLUE}You can start it manually later with: sudo systemctl start mysql${NC}"
+    fi
+
+    # Clean up temporary config
+    sudo rm -f /etc/mysql/conf.d/low-memory.cnf
+
+    return 0
+}
+
+# Enhanced Node.js installation with multiple fallback methods
+install_nodejs() {
+    echo -e "\n${YELLOW}Installing Node.js and npm...${NC}"
+
+    if command -v node &>/dev/null; then
+        echo -e "${GREEN}✅ Node.js is already installed${NC}"
+        return 0
+    fi
+
+    # Method 1: NodeSource repository (preferred)
+    echo -e "${BLUE}Trying NodeSource repository installation...${NC}"
+    if curl -fsSL https://deb.nodesource.com/setup_20.x 2>/dev/null | sudo -E bash - && sudo apt-get install -y nodejs 2>/dev/null; then
+        echo -e "${GREEN}✅ Node.js installed via NodeSource repository${NC}"
+        return 0
+    fi
+
+    echo -e "${YELLOW}NodeSource installation failed, trying alternative methods...${NC}"
+
+    # Method 2: Ubuntu package manager
+    echo -e "${BLUE}Trying Ubuntu package manager...${NC}"
+    if sudo apt-get install -y nodejs npm 2>/dev/null; then
+        echo -e "${GREEN}✅ Node.js installed via package manager${NC}"
+
+        # Check if we got a reasonable version
+        local node_version=$(node -v 2>/dev/null | sed 's/v//')
+        local major_version=$(echo "$node_version" | cut -d. -f1)
+
+        if [ -n "$major_version" ] && [ "$major_version" -ge 14 ]; then
+            echo -e "${GREEN}✅ Node.js version $node_version is suitable${NC}"
+            return 0
+        else
+            echo -e "${YELLOW}⚠️  Node.js version $node_version might be too old${NC}"
+        fi
+    fi
+
+    # Method 3: Snap package (if available)
+    if command -v snap &>/dev/null; then
+        echo -e "${BLUE}Trying Snap package...${NC}"
+        if sudo snap install node --classic 2>/dev/null; then
+            echo -e "${GREEN}✅ Node.js installed via Snap${NC}"
+            return 0
+        fi
+    fi
+
+    # Method 4: Manual installation
+    echo -e "${BLUE}Attempting manual installation...${NC}"
+    local node_url="https://nodejs.org/dist/v20.9.0/node-v20.9.0-linux-x64.tar.xz"
+    local install_dir="/opt/nodejs"
+
+    if curl -fsSL "$node_url" -o /tmp/nodejs.tar.xz 2>/dev/null; then
+        sudo mkdir -p "$install_dir"
+        if sudo tar -xf /tmp/nodejs.tar.xz -C "$install_dir" --strip-components=1 2>/dev/null; then
+            # Add to PATH
+            echo 'export PATH=/opt/nodejs/bin:$PATH' | sudo tee /etc/profile.d/nodejs.sh > /dev/null
+            export PATH=/opt/nodejs/bin:$PATH
+
+            # Create symlinks
+            sudo ln -sf /opt/nodejs/bin/node /usr/local/bin/node 2>/dev/null || true
+            sudo ln -sf /opt/nodejs/bin/npm /usr/local/bin/npm 2>/dev/null || true
+
+            echo -e "${GREEN}✅ Node.js installed manually${NC}"
+            rm -f /tmp/nodejs.tar.xz
+            return 0
+        fi
+    fi
+
+    echo -e "${RED}❌ All Node.js installation methods failed${NC}"
+    echo -e "${YELLOW}💡 You can install Node.js manually later:${NC}"
+    echo "   • Visit: https://nodejs.org/"
+    echo "   • Or try: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash"
+
+    read -p "Continue without Node.js? [y/N] " skip_nodejs
+    if [[ "$skip_nodejs" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}⚠️  Skipping Node.js installation${NC}"
+        return 0
+    else
+        return 1
+    fi
+}
+
 check_tool() {
     local tool=$1
     local user
@@ -82,7 +362,7 @@ check_tool() {
                 version=$(php -r 'echo PHP_VERSION;' 2>/dev/null)
                 ;;
             mysqld)
-                version=$(mysqld --version | awk '{print $3}')
+                version=$(mysqld --version 2>/dev/null | awk '{print $3}' || echo "installed")
                 ;;
             node)
                 version=$(node -v 2>/dev/null)
@@ -91,7 +371,7 @@ check_tool() {
                 version=$(npm -v 2>/dev/null)
                 ;;
             composer)
-                version=$(sudo -u "$user" -i composer --version 2>/dev/null | awk '{print $3}')
+                version=$(sudo -u "$user" -i composer --version 2>/dev/null | awk '{print $3}' || echo "installed")
                 ;;
         esac
 
@@ -124,6 +404,9 @@ setup_server() {
     local CURRENT_USER
     CURRENT_USER=$(get_current_user)
 
+    # Check system resources and create swap if needed
+    ensure_swap
+
     # PHP Version Selection using select (enter the option number)
     PS3="Select PHP version (enter the option number): "
     select chosen in 8.4 8.3 8.2 8.1; do
@@ -137,18 +420,24 @@ setup_server() {
     done
 
     echo -e "\n${BLUE}Selected PHP version: $php_version${NC}"
-    sudo apt update
+
+    # Update package list
+    echo -e "\n${YELLOW}Updating package list...${NC}"
+    sudo apt-get update
 
     # Nginx
     if ! command -v nginx &>/dev/null; then
         echo -e "\n${YELLOW}Installing Nginx...${NC}"
-        if sudo apt install -y nginx; then
+        if sudo apt-get install -y nginx; then
             sudo systemctl enable nginx
             sudo systemctl start nginx
             echo -e "${GREEN}✅ Nginx installed successfully${NC}"
         else
             echo -e "${RED}❌ Failed to install Nginx${NC}"
-            return 1
+            read -p "Continue without Nginx? [y/N] " skip_nginx
+            if [[ ! "$skip_nginx" =~ ^[Yy]$ ]]; then
+                return 1
+            fi
         fi
     else
         echo -e "${GREEN}✅ Nginx is already installed${NC}"
@@ -156,7 +445,7 @@ setup_server() {
 
     # PHP
     echo -e "\n${YELLOW}Installing PHP $php_version and extensions...${NC}"
-    if sudo apt install -y \
+    if sudo apt-get install -y \
         php$php_version-fpm \
         php$php_version-common \
         php$php_version-mysql \
@@ -173,80 +462,65 @@ setup_server() {
         php$php_version-zip \
         php$php_version-sqlite3 \
         php$php_version-bcmath \
-        php$php_version-intl; then
+        php$php_version-intl 2>/dev/null; then
 
         sudo systemctl enable php$php_version-fpm
         sudo systemctl start php$php_version-fpm
         echo -e "${GREEN}✅ PHP $php_version installed successfully${NC}"
     else
         echo -e "${RED}❌ Failed to install PHP $php_version${NC}"
-        return 1
-    fi
-
-    # MySQL
-    if ! command -v mysqld &>/dev/null; then
-        echo -e "\n${YELLOW}Installing MySQL...${NC}"
-        if sudo apt install -y mysql-server; then
-            sudo systemctl enable mysql
-            sudo systemctl start mysql
-            echo -e "${GREEN}✅ MySQL installed successfully${NC}"
-
-            # Prompt for MySQL root password
-            echo -e "\n${YELLOW}Setting up MySQL security...${NC}"
-            read -s -p "Enter a password for MySQL root user: " db_root_pass
-            echo ""
-
-            if [ -n "$db_root_pass" ]; then
-                # Set MySQL root password
-                if sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$db_root_pass'; FLUSH PRIVILEGES;"; then
-                    echo -e "${GREEN}✅ MySQL root password set successfully${NC}"
-                    echo -e "${YELLOW}Running MySQL secure installation...${NC}"
-                    sudo mysql_secure_installation
-                else
-                    echo -e "${RED}❌ Failed to set MySQL root password${NC}"
-                fi
-            else
-                echo -e "${YELLOW}No password set for MySQL root user${NC}"
-            fi
-        else
-            echo -e "${RED}❌ Failed to install MySQL${NC}"
+        read -p "Continue without PHP? [y/N] " skip_php
+        if [[ ! "$skip_php" =~ ^[Yy]$ ]]; then
             return 1
         fi
-    else
-        echo -e "${GREEN}✅ MySQL is already installed${NC}"
     fi
 
-    # Node.js and npm
-    if ! command -v node &>/dev/null; then
-        echo -e "\n${YELLOW}Installing Node.js and npm...${NC}"
-        # Install Node.js 20 LTS
-        if curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt install -y nodejs; then
-            echo -e "${GREEN}✅ Node.js and npm installed successfully${NC}"
-        else
-            echo -e "${RED}❌ Failed to install Node.js${NC}"
-            # Try alternative method
-            echo -e "${YELLOW}Trying alternative installation method...${NC}"
-            if sudo apt install -y nodejs npm; then
-                echo -e "${GREEN}✅ Node.js and npm installed via package manager${NC}"
-            else
-                echo -e "${RED}❌ Failed to install Node.js and npm${NC}"
-                return 1
-            fi
-        fi
-    else
-        echo -e "${GREEN}✅ Node.js is already installed${NC}"
-    fi
+    # MySQL with enhanced error handling
+    install_mysql
 
-    # Composer installation with improved PATH handling
+    # Node.js with multiple fallback methods
+    install_nodejs
+
+    # Composer installation with improved error handling
     if ! command -v composer &>/dev/null; then
         echo -e "\n${YELLOW}Installing Composer...${NC}"
 
-        # Download and install Composer
-        if php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');" && \
-           sudo php composer-setup.php --install-dir=/usr/local/bin --filename=composer; then
-            rm -f composer-setup.php
-            echo -e "${GREEN}✅ Composer installed to /usr/local/bin/composer${NC}"
+        # Download and install Composer with retries
+        local composer_installed=false
+        local attempts=0
+        local max_attempts=3
 
+        while [ $attempts -lt $max_attempts ] && [ "$composer_installed" = false ]; do
+            attempts=$((attempts + 1))
+            echo -e "${YELLOW}Composer installation attempt $attempts/$max_attempts...${NC}"
+
+            if curl -sS https://getcomposer.org/installer 2>/dev/null | php -- --install-dir=/tmp --filename=composer 2>/dev/null; then
+                if sudo mv /tmp/composer /usr/local/bin/composer && sudo chmod +x /usr/local/bin/composer; then
+                    composer_installed=true
+                    echo -e "${GREEN}✅ Composer installed successfully${NC}"
+                else
+                    echo -e "${YELLOW}Failed to move Composer to final location${NC}"
+                fi
+            else
+                echo -e "${YELLOW}Failed to download Composer installer${NC}"
+            fi
+
+            if [ "$composer_installed" = false ] && [ $attempts -lt $max_attempts ]; then
+                echo "Waiting 10 seconds before retry..."
+                sleep 10
+            fi
+        done
+
+        if [ "$composer_installed" = false ]; then
+            echo -e "${RED}❌ Failed to install Composer${NC}"
+            echo -e "${YELLOW}💡 You can install Composer manually later:${NC}"
+            echo "   • Visit: https://getcomposer.org/download/"
+
+            read -p "Continue without Composer? [y/N] " skip_composer
+            if [[ ! "$skip_composer" =~ ^[Yy]$ ]]; then
+                return 1
+            fi
+        else
             # Check if /usr/local/bin is in PATH
             if ! echo "$PATH" | grep -q "/usr/local/bin"; then
                 echo -e "\n${YELLOW}⚠️  /usr/local/bin is not in your PATH${NC}"
@@ -294,10 +568,6 @@ setup_server() {
             else
                 echo -e "${GREEN}✅ /usr/local/bin is already in PATH${NC}"
             fi
-        else
-            echo -e "${RED}❌ Failed to install Composer${NC}"
-            rm -f composer-setup.php
-            return 1
         fi
     else
         echo -e "${GREEN}✅ Composer is already installed${NC}"
@@ -323,18 +593,59 @@ setup_server() {
     echo "php_version=$php_version" | sudo tee "$CONFIG_DIR/config" > /dev/null
     sudo chmod 644 "$CONFIG_DIR/config"
 
-    echo -e "\n${GREEN}🎉 Server setup completed successfully!${NC}"
+    # Clean up temporary swap if created
+    cleanup_temp_swap
+
+    echo -e "\n${GREEN}🎉 Server setup completed!${NC}"
     echo -e "\n${BLUE}📋 Installation Summary:${NC}"
-    echo -e "  • Nginx: $(nginx -v 2>&1 | awk -F/ '{print $2}' | cut -d' ' -f1)"
-    echo -e "  • PHP: $php_version"
-    echo -e "  • MySQL: $(mysqld --version | awk '{print $3}')"
-    echo -e "  • Node.js: $(node -v 2>/dev/null)"
-    echo -e "  • npm: $(npm -v 2>/dev/null)"
-    echo -e "  • Composer: $(composer --version 2>/dev/null | awk '{print $3}')"
+
+    # Show what was actually installed
+    if command -v nginx &>/dev/null; then
+        echo -e "  • Nginx: $(nginx -v 2>&1 | awk -F/ '{print $2}' | cut -d' ' -f1)"
+    else
+        echo -e "  • Nginx: ${RED}Not installed${NC}"
+    fi
+
+    if command -v php &>/dev/null; then
+        echo -e "  • PHP: $php_version"
+    else
+        echo -e "  • PHP: ${RED}Not installed${NC}"
+    fi
+
+    if command -v mysqld &>/dev/null; then
+        echo -e "  • MySQL: $(mysqld --version 2>/dev/null | awk '{print $3}' || echo 'installed')"
+    else
+        echo -e "  • MySQL: ${RED}Not installed${NC}"
+    fi
+
+    if command -v node &>/dev/null; then
+        echo -e "  • Node.js: $(node -v 2>/dev/null)"
+    else
+        echo -e "  • Node.js: ${RED}Not installed${NC}"
+    fi
+
+    if command -v npm &>/dev/null; then
+        echo -e "  • npm: $(npm -v 2>/dev/null)"
+    else
+        echo -e "  • npm: ${RED}Not installed${NC}"
+    fi
+
+    if command -v composer &>/dev/null; then
+        echo -e "  • Composer: $(composer --version 2>/dev/null | awk '{print $3}' || echo 'installed')"
+    else
+        echo -e "  • Composer: ${RED}Not installed${NC}"
+    fi
+
     echo -e "\n${YELLOW}💡 Next Steps:${NC}"
-    echo -e "  1. Restart your terminal or run: source ~/.zshrc"
-    echo -e "  2. Create your first site: sudo site-manager"
-    echo -e "  3. Select option 1 (Create New Project)"
+    echo -e "  1. Run: source ~/.bashrc (or restart your terminal)"
+    echo -e "  2. Check installation: site-manager check"
+    echo -e "  3. Create your first site: sudo site-manager"
+    echo -e "  4. Select option 1 (Create New Project)"
+
+    echo -e "\n${BLUE}💡 If any service failed to install:${NC}"
+    echo -e "  • You can retry: sudo site-manager setup"
+    echo -e "  • Or install manually later"
+    echo -e "  • Check system resources and add more memory if needed"
 }
 
 configure_existing_project() {
@@ -1878,7 +2189,7 @@ fix_permissions() {
     echo ""
     echo -e "${GREEN}1) Quick Fix (recommended)${NC} - Fix common permission issues"
     echo -e "   ${BLUE}What it does:${NC}"
-    echo -e "   • Sets owner to your user (williamdk) and group to www-data"
+    echo -e "   • Sets owner to your user (${USER}) and group to www-data"
     echo -e "   • Directories: 755 (you: read/write/execute, others: read/execute)"
     echo -e "   • Files: 644 (you: read/write, others: read only)"
     echo -e "   • Laravel storage/cache: 775 (group writable for web server)"
