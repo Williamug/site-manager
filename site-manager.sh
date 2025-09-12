@@ -38,13 +38,13 @@ get_php_version() {
         echo "$php_version"
         return
     fi
-    
+
     # Check config file
     if [ -f "$CONFIG_DIR/config" ] && grep -q "php_version=" "$CONFIG_DIR/config"; then
         grep "php_version=" "$CONFIG_DIR/config" | cut -d'=' -f2
         return
     fi
-    
+
     # Fallback to auto-detection
     get_default_php_version
 }
@@ -120,10 +120,10 @@ check_dependencies() {
 setup_server() {
     show_header
     echo -e "${YELLOW}This Is The Initial Server Setup${NC}"
-    
+
     local CURRENT_USER
     CURRENT_USER=$(get_current_user)
-    
+
     # PHP Version Selection using select (enter the option number)
     PS3="Select PHP version (enter the option number): "
     select chosen in 8.4 8.3 8.2 8.1; do
@@ -174,7 +174,7 @@ setup_server() {
         php$php_version-sqlite3 \
         php$php_version-bcmath \
         php$php_version-intl; then
-        
+
         sudo systemctl enable php$php_version-fpm
         sudo systemctl start php$php_version-fpm
         echo -e "${GREEN}✅ PHP $php_version installed successfully${NC}"
@@ -190,12 +190,12 @@ setup_server() {
             sudo systemctl enable mysql
             sudo systemctl start mysql
             echo -e "${GREEN}✅ MySQL installed successfully${NC}"
-            
+
             # Prompt for MySQL root password
             echo -e "\n${YELLOW}Setting up MySQL security...${NC}"
             read -s -p "Enter a password for MySQL root user: " db_root_pass
             echo ""
-            
+
             if [ -n "$db_root_pass" ]; then
                 # Set MySQL root password
                 if sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$db_root_pass'; FLUSH PRIVILEGES;"; then
@@ -240,17 +240,17 @@ setup_server() {
     # Composer installation with improved PATH handling
     if ! command -v composer &>/dev/null; then
         echo -e "\n${YELLOW}Installing Composer...${NC}"
-        
+
         # Download and install Composer
         if php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');" && \
            sudo php composer-setup.php --install-dir=/usr/local/bin --filename=composer; then
             rm -f composer-setup.php
             echo -e "${GREEN}✅ Composer installed to /usr/local/bin/composer${NC}"
-            
+
             # Check if /usr/local/bin is in PATH
             if ! echo "$PATH" | grep -q "/usr/local/bin"; then
                 echo -e "\n${YELLOW}⚠️  /usr/local/bin is not in your PATH${NC}"
-                
+
                 # Detect shell configuration file
                 detect_shell_config() {
                     local user_home
@@ -259,7 +259,7 @@ setup_server() {
                     else
                         user_home="$HOME"
                     fi
-                    
+
                     case $(basename "$SHELL") in
                         bash*)  echo "$user_home/.bashrc" ;;
                         zsh*)   echo "$user_home/.zshrc" ;;
@@ -267,25 +267,25 @@ setup_server() {
                         *)      echo "$user_home/.profile" ;;
                     esac
                 }
-                
+
                 config_file=$(detect_shell_config)
                 echo "Detected shell configuration file: $config_file"
-                
+
                 read -p "Add /usr/local/bin to PATH in $config_file? [Y/n] " response
                 if [[ ! "$response" =~ ^[Nn] ]]; then
                     # Create backup
                     if [ -f "$config_file" ]; then
                         cp "$config_file" "$config_file.backup.$(date +%Y%m%d_%H%M%S)"
                     fi
-                    
+
                     # Add PATH export
                     echo -e "\n# Added by Site Manager" >> "$config_file"
                     echo 'export PATH="$PATH:/usr/local/bin"' >> "$config_file"
-                    
+
                     if [ -n "$SUDO_USER" ]; then
                         sudo chown "$SUDO_USER:$SUDO_USER" "$config_file"
                     fi
-                    
+
                     echo -e "${GREEN}✅ Added /usr/local/bin to PATH in $config_file${NC}"
                     echo -e "${YELLOW}💡 Please run: source $config_file (or restart your terminal)${NC}"
                 else
@@ -308,7 +308,7 @@ setup_server() {
     sudo mkdir -p "$WEB_ROOT"
     sudo chown -R "$CURRENT_USER":www-data "$WEB_ROOT"
     sudo chmod -R 775 "$WEB_ROOT"
-    
+
     # Add user to www-data group
     if ! groups "$CURRENT_USER" | grep -q www-data; then
         sudo usermod -aG www-data "$CURRENT_USER"
@@ -335,6 +335,207 @@ setup_server() {
     echo -e "  1. Restart your terminal or run: source ~/.zshrc"
     echo -e "  2. Create your first site: sudo site-manager"
     echo -e "  3. Select option 1 (Create New Project)"
+}
+
+configure_existing_project() {
+    local CURRENT_USER
+    CURRENT_USER=$(get_current_user)
+
+    echo -e "${YELLOW}Configure Existing Project in /var/www${NC}"
+
+    # List existing projects in /var/www
+    echo -e "\n${BLUE}Available projects in $WEB_ROOT:${NC}"
+    if [ -d "$WEB_ROOT" ] && [ "$(ls -A "$WEB_ROOT" 2>/dev/null)" ]; then
+        local count=1
+        local projects=()
+
+        # Store projects in array and display them
+        for dir in "$WEB_ROOT"/*; do
+            if [ -d "$dir" ]; then
+                local project_name=$(basename "$dir")
+                projects[count]="$project_name"
+                echo "  $count) $project_name"
+                ((count++))
+            fi
+        done
+
+        if [ ${#projects[@]} -eq 0 ]; then
+            echo -e "${RED}❌ No projects found in $WEB_ROOT${NC}"
+            return 1
+        fi
+
+        echo -e "\n${YELLOW}Select a project or enter a custom path:${NC}"
+        read -p "Enter project number (1-$((count-1))) or full path: " selection
+
+        local project_path=""
+        local project_name=""
+
+        # Check if selection is a number
+        if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -lt "$count" ]; then
+            project_name="${projects[$selection]}"
+            project_path="$WEB_ROOT/$project_name"
+        else
+            # Treat as custom path
+            project_path=$(realpath "$selection" 2>/dev/null)
+            if [ -z "$project_path" ] || [ ! -d "$project_path" ]; then
+                echo -e "${RED}❌ Invalid selection or path does not exist: $selection${NC}"
+                return 1
+            fi
+            project_name=$(basename "$project_path")
+        fi
+
+        echo "Selected project: $project_name"
+        echo "Project path: $project_path"
+
+    else
+        echo -e "${RED}❌ $WEB_ROOT directory is empty or does not exist${NC}"
+        echo -e "${YELLOW}💡 Use 'Create New Project' or 'Move Project' first${NC}"
+        return 1
+    fi
+
+    # Get domain name with validation
+    while true; do
+        read -p "Enter domain name for this project: " domain
+        if [ -z "$domain" ] || [ "$domain" = "exit" ]; then
+            echo -e "${RED}Error: Please enter a valid domain name${NC}"
+            continue
+        fi
+
+        # Check if domain already has configuration
+        if [ -f "${NGINX_DIR}/sites-available/${domain}" ]; then
+            echo -e "${YELLOW}Warning: Nginx configuration already exists for domain: $domain${NC}"
+            read -p "Overwrite existing configuration? [y/N] " overwrite
+            if [[ "$overwrite" =~ ^[Yy]$ ]]; then
+                break
+            else
+                continue
+            fi
+        fi
+
+        # Basic domain validation
+        if [[ "$domain" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] || [[ "$domain" =~ \.test$ ]] || [[ "$domain" =~ \.local$ ]]; then
+            break
+        else
+            echo -e "${YELLOW}Warning: '$domain' doesn't look like a valid domain. Continue anyway? [y/N]${NC}"
+            read -p "" confirm
+            if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                break
+            fi
+        fi
+    done
+
+    # Detect project type and set document root
+    local is_laravel=false
+    local document_root="$project_path"
+
+    if [ -f "$project_path/artisan" ] && [ -d "$project_path/app" ] && [ -f "$project_path/composer.json" ]; then
+        is_laravel=true
+        document_root="$project_path/public"
+        echo -e "${GREEN}Laravel project detected!${NC}"
+        echo "Document root will be set to: $document_root"
+
+        # Offer to fix Laravel permissions
+        read -p "Fix Laravel permissions? [Y/n] " fix_perms
+        if [[ ! "$fix_perms" =~ ^[Nn]$ ]]; then
+            echo "Setting Laravel permissions..."
+            for dir in storage bootstrap/cache; do
+                if [ -d "$project_path/$dir" ]; then
+                    sudo chown -R "$CURRENT_USER":www-data "$project_path/$dir"
+                    sudo find "$project_path/$dir" -type d -exec chmod 775 {} \;
+                    sudo find "$project_path/$dir" -type f -exec chmod 664 {} \;
+                    sudo chmod -R g+s "$project_path/$dir"
+                fi
+            done
+
+            # Handle database directory if exists
+            if [ -d "$project_path/database" ]; then
+                sudo chown -R "$CURRENT_USER":www-data "$project_path/database"
+                sudo find "$project_path/database" -type d -exec chmod 775 {} \;
+                sudo find "$project_path/database" -type f -exec chmod 664 {} \;
+                sudo chmod -R g+s "$project_path/database"
+            fi
+
+            # Set execute permissions for artisan
+            if [ -f "$project_path/artisan" ]; then
+                sudo chmod +x "$project_path/artisan"
+            fi
+
+            echo -e "${GREEN}✅ Laravel permissions set${NC}"
+        fi
+
+        # Check for missing files
+        if [ ! -f "$project_path/.env" ] && [ -f "$project_path/.env.example" ]; then
+            read -p "Create .env file from .env.example? [Y/n] " create_env
+            if [[ ! "$create_env" =~ ^[Nn]$ ]]; then
+                sudo -u "$CURRENT_USER" cp "$project_path/.env.example" "$project_path/.env"
+                echo -e "${GREEN}✅ .env file created${NC}"
+
+                # Generate app key if needed
+                if grep -q "APP_KEY=$" "$project_path/.env" 2>/dev/null; then
+                    read -p "Generate Laravel application key? [Y/n] " gen_key
+                    if [[ ! "$gen_key" =~ ^[Nn]$ ]]; then
+                        sudo -u "$CURRENT_USER" bash -c "cd '$project_path' && php artisan key:generate --ansi"
+                        echo -e "${GREEN}✅ Application key generated${NC}"
+                    fi
+                fi
+            fi
+        fi
+
+        # Check for vendor directory
+        if [ ! -d "$project_path/vendor" ] && [ -f "$project_path/composer.json" ]; then
+            read -p "Install Composer dependencies? [Y/n] " install_deps
+            if [[ ! "$install_deps" =~ ^[Nn]$ ]]; then
+                echo "Installing Composer dependencies..."
+                if sudo -u "$CURRENT_USER" bash -c "cd '$project_path' && composer install --no-dev --optimize-autoloader"; then
+                    echo -e "${GREEN}✅ Composer dependencies installed${NC}"
+                else
+                    echo -e "${YELLOW}⚠️  Failed to install Composer dependencies${NC}"
+                fi
+            fi
+        fi
+
+    else
+        echo "Standard PHP project detected."
+        echo "Document root will be set to: $document_root"
+
+        # Check for index file
+        if [ ! -f "$project_path/index.php" ] && [ ! -f "$project_path/index.html" ] && [ ! -f "$project_path/index.htm" ]; then
+            read -p "No index file found. Create index.php? [Y/n] " create_index
+            if [[ ! "$create_index" =~ ^[Nn]$ ]]; then
+                echo "Creating welcome index.php..."
+                sudo bash -c "cat > '$project_path/index.php'" <<EOL
+<?php
+echo "<html><head><title>Welcome to $domain</title><style>body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; background: #f5f5f5; }</style></head><body><h1>Project Configured Successfully!</h1><p>Your existing project is now accessible via <strong>http://$domain</strong></p><p>Project location: <code>$project_path</code></p><p>For more information, visit <a href=\"https://github.com/williamug/site-manager\">Site Manager</a>.</p></body></html>";
+?>
+EOL
+                sudo chown "$CURRENT_USER":www-data "$project_path/index.php"
+                sudo chmod 644 "$project_path/index.php"
+                echo -e "${GREEN}✅ Welcome index.php created${NC}"
+            fi
+        fi
+    fi
+
+    # Ensure proper basic permissions
+    sudo chown -R "$CURRENT_USER":www-data "$project_path"
+    sudo find "$project_path" -type d -exec chmod 755 {} \;
+    sudo find "$project_path" -type f -exec chmod 644 {} \;
+
+    # Setup Nginx configuration
+    echo -e "\n${YELLOW}Creating Nginx configuration...${NC}"
+    setup_nginx "$domain" "$document_root"
+
+    echo -e "${GREEN}✅ Project successfully configured!${NC}"
+    echo -e "${GREEN}📁 Project: ${project_name}${NC}"
+    echo -e "${GREEN}📂 Location: ${project_path}${NC}"
+    echo -e "${GREEN}🌐 URL: http://${domain}${NC}"
+
+    if [ "$is_laravel" = true ]; then
+        echo -e "${YELLOW}💡 Laravel Tips:${NC}"
+        echo "   • Configure your .env file: $project_path/.env"
+        echo "   • Run migrations: php artisan migrate"
+        echo "   • Install npm dependencies: npm install && npm run build"
+        echo "   • Check storage and cache permissions"
+    fi
 }
 
 create_site() {
@@ -583,9 +784,9 @@ EOL
 clone_project() {
     local CURRENT_USER
     CURRENT_USER=$(get_current_user)
-    
+
     echo -e "${YELLOW}Cloning Project from GitHub${NC}"
-    
+
     # Get and validate repository URL
     while true; do
         read -p "Git repository URL: " repo_url
@@ -593,7 +794,7 @@ clone_project() {
             echo -e "${RED}Error: Repository URL cannot be empty${NC}"
             continue
         fi
-        
+
         # Basic URL validation
         if [[ "$repo_url" =~ ^(https?://|git@) ]]; then
             break
@@ -605,7 +806,7 @@ clone_project() {
             fi
         fi
     done
-    
+
     # Get and validate domain name
     while true; do
         read -p "Enter domain name: " domain
@@ -624,7 +825,7 @@ clone_project() {
             fi
         fi
     done
-    
+
     # Extract project name from repository URL
     if [[ "$repo_url" =~ git@github\.com:(.+)\.git$ ]]; then
         # SSH URL: git@github.com:user/repo.git
@@ -636,12 +837,12 @@ clone_project() {
         # Fallback: use basename
         project_name=$(basename "$repo_url" .git)
     fi
-    
+
     target_path="${WEB_ROOT}/${project_name}"
-    
+
     echo "Project name: $project_name"
     echo "Target path: $target_path"
-    
+
     # Check if target directory already exists
     if [ -d "$target_path" ]; then
         echo -e "${YELLOW}Warning: Target directory '$target_path' already exists.${NC}"
@@ -653,10 +854,10 @@ clone_project() {
             return 1
         fi
     fi
-    
+
     # Create parent directory
     sudo mkdir -p "$(dirname "$target_path")"
-    
+
     # Clone the repository
     echo -e "\n${YELLOW}Cloning repository...${NC}"
     if sudo -u "$CURRENT_USER" git clone "$repo_url" "$target_path"; then
@@ -665,21 +866,21 @@ clone_project() {
         echo -e "${RED}❌ Failed to clone repository${NC}"
         return 1
     fi
-    
+
     # Set basic ownership and permissions
     sudo chown -R "$CURRENT_USER":www-data "$target_path"
     sudo find "$target_path" -type d -exec chmod 755 {} \;
     sudo find "$target_path" -type f -exec chmod 644 {} \;
-    
+
     # Detect if it's a Laravel project
     local is_laravel=false
     local document_root="$target_path"
-    
+
     if [ -f "$target_path/artisan" ] && [ -d "$target_path/app" ] && [ -f "$target_path/composer.json" ]; then
         is_laravel=true
         document_root="$target_path/public"
         echo -e "${GREEN}Laravel project detected!${NC}"
-        
+
         # Set Laravel-specific permissions
         echo "Setting Laravel permissions..."
         for dir in storage bootstrap/cache; do
@@ -690,7 +891,7 @@ clone_project() {
                 sudo chmod -R g+s "$target_path/$dir"
             fi
         done
-        
+
         # Handle database directory if exists
         if [ -d "$target_path/database" ]; then
             sudo chown -R "$CURRENT_USER":www-data "$target_path/database"
@@ -698,12 +899,12 @@ clone_project() {
             sudo find "$target_path/database" -type f -exec chmod 664 {} \;
             sudo chmod -R g+s "$target_path/database"
         fi
-        
+
         # Set execute permissions for artisan
         if [ -f "$target_path/artisan" ]; then
             sudo chmod +x "$target_path/artisan"
         fi
-        
+
         # Install Composer dependencies
         if [ -f "$target_path/composer.json" ]; then
             echo "Installing Composer dependencies..."
@@ -713,14 +914,14 @@ clone_project() {
                 echo -e "${YELLOW}⚠️  Failed to install Composer dependencies${NC}"
             fi
         fi
-        
+
         # Create .env if .env.example exists
         if [ -f "$target_path/.env.example" ] && [ ! -f "$target_path/.env" ]; then
             echo "Creating .env file from .env.example..."
             sudo -u "$CURRENT_USER" cp "$target_path/.env.example" "$target_path/.env"
             sudo -u "$CURRENT_USER" bash -c "cd '$target_path' && php artisan key:generate --ansi"
         fi
-        
+
         # Install NPM dependencies if package.json exists
         if [ -f "$target_path/package.json" ]; then
             echo "Installing NPM dependencies..."
@@ -744,14 +945,14 @@ EOL
             sudo chmod 644 "$target_path/index.php"
         fi
     fi
-    
+
     # Setup Nginx configuration
     setup_nginx "$domain" "$document_root"
-    
+
     echo -e "${GREEN}✅ Project successfully cloned!${NC}"
     echo -e "${GREEN}📁 Location: ${target_path}${NC}"
     echo -e "${GREEN}🌐 URL: http://${domain}${NC}"
-    
+
     if [ "$is_laravel" = true ]; then
         echo -e "${YELLOW}💡 Laravel Tips:${NC}"
         echo "   • Configure your .env file in $target_path"
@@ -857,9 +1058,9 @@ backup_site() {
     local domain=$1
     local CURRENT_USER
     CURRENT_USER=$(get_current_user)
-    
+
     echo -e "${YELLOW}Creating Project Backup${NC}"
-    
+
     # Get backup destination
     read -p "Enter custom backup destination (or press Enter to use default [$BACKUP_DIR]): " custom_dest
     if [ -n "$custom_dest" ]; then
@@ -867,23 +1068,23 @@ backup_site() {
     else
         custom_dir="$BACKUP_DIR"
     fi
-    
+
     # Create backup directory if it doesn't exist
     if ! sudo mkdir -p "$custom_dir"; then
         echo -e "${RED}❌ Failed to create backup directory: $custom_dir${NC}"
         return 1
     fi
-    
+
     local default_backup_name="${domain}_$(date +%Y%m%d_%H%M%S)"
     echo -e "${YELLOW}Backup destination: ${custom_dir}/${default_backup_name}.tar.gz${NC}"
     echo -e "Default backup name: ${default_backup_name} (press Enter to keep)\n"
-    
+
     read -p "Enter custom backup name [${default_backup_name}]: " backup_name
     backup_name=${backup_name:-$default_backup_name}
-    
+
     local backup_dir="${custom_dir}/${backup_name}"
     local backup_file="${backup_dir}.tar.gz"
-    
+
     # Check if backup file already exists
     if [ -f "$backup_file" ]; then
         echo -e "${YELLOW}Warning: Backup file '$backup_file' already exists.${NC}"
@@ -893,7 +1094,7 @@ backup_site() {
             return 1
         fi
     fi
-    
+
     echo -e "\n${YELLOW}Select backup type (default: 1):${NC}"
     PS3="Enter your choice (1-3): "
     local backup_code=false
@@ -906,21 +1107,21 @@ backup_site() {
             *) echo "Using default (Both)"; backup_code=true; backup_db=true; break;;
         esac
     done
-    
+
     # Get project directory
     read -p "Enter full path of the project directory to backup: " project_dir
     if [ ! -d "$project_dir" ]; then
         echo -e "${RED}❌ Project directory does not exist: $project_dir${NC}"
         return 1
     fi
-    
+
     # Create temporary backup directory
     local temp_backup_dir="${backup_dir}_temp"
     if ! mkdir -p "$temp_backup_dir"; then
         echo -e "${RED}❌ Failed to create temporary backup directory${NC}"
         return 1
     fi
-    
+
     # Backup project code
     if $backup_code; then
         echo -e "\n${YELLOW}Backing up project files...${NC}"
@@ -933,7 +1134,7 @@ backup_site() {
             return 1
         fi
     fi
-    
+
     # Backup database
     if $backup_db; then
         echo -e "\n${YELLOW}Backing up database...${NC}"
@@ -944,7 +1145,7 @@ backup_site() {
             read -p "Enter database user: " db_user
             read -s -p "Enter database password: " db_pass
             echo ""
-            
+
             if [ -n "$db_user" ] && [ -n "$db_pass" ]; then
                 echo "Creating database dump..."
                 if mysqldump -u "$db_user" -p"$db_pass" "$db_name" > "$temp_backup_dir/db_dump.sql" 2>/dev/null; then
@@ -958,16 +1159,16 @@ backup_site() {
             fi
         fi
     fi
-    
+
     # Create final backup archive
     echo -e "\n${YELLOW}Creating backup archive...${NC}"
     if tar -czf "$backup_file" -C "$(dirname "$temp_backup_dir")" "$(basename "$temp_backup_dir")" 2>/dev/null; then
         # Clean up temporary directory
         rm -rf "$temp_backup_dir"
-        
+
         # Get backup file size
         local backup_size=$(du -h "$backup_file" | cut -f1)
-        
+
         echo -e "${GREEN}✅ Backup created successfully!${NC}"
         echo -e "${GREEN}📁 Location: $backup_file${NC}"
         echo -e "${GREEN}📦 Size: $backup_size${NC}"
@@ -984,28 +1185,28 @@ restore_site() {
     local backup_file=$1
     local CURRENT_USER
     CURRENT_USER=$(get_current_user)
-    
+
     echo -e "${YELLOW}Restoring Project from Backup${NC}"
-    
+
     # Validate backup file
     if [ ! -f "$backup_file" ]; then
         echo -e "${RED}❌ Backup file does not exist: $backup_file${NC}"
         return 1
     fi
-    
+
     # Get domain for restored site
     read -p "Enter domain name for restored site: " restore_domain
     if [ -z "$restore_domain" ]; then
         echo -e "${RED}❌ Domain name is required for restoration${NC}"
         return 1
     fi
-    
+
     echo -e "\n${YELLOW}Restoring from: ${backup_file}${NC}"
-    
+
     # Create temporary extraction directory
     local temp_extract_dir="/tmp/site_manager_restore_$$"
     mkdir -p "$temp_extract_dir"
-    
+
     # Extract backup
     echo "Extracting backup archive..."
     if [[ "$backup_file" == *.tar.gz ]]; then
@@ -1029,7 +1230,7 @@ restore_site() {
         rm -rf "$temp_extract_dir"
         return 1
     fi
-    
+
     # Find the project directory in extraction
     local extracted_project=$(find "$temp_extract_dir" -mindepth 2 -maxdepth 2 -type d | head -1)
     if [ -z "$extracted_project" ] || [ ! -d "$extracted_project" ]; then
@@ -1037,13 +1238,13 @@ restore_site() {
         rm -rf "$temp_extract_dir"
         return 1
     fi
-    
+
     local project_name=$(basename "$extracted_project")
     local target_path="${WEB_ROOT}/${project_name}"
-    
+
     echo "Project name: $project_name"
     echo "Target path: $target_path"
-    
+
     # Check if target already exists
     if [ -d "$target_path" ]; then
         echo -e "${YELLOW}Warning: Target directory '$target_path' already exists.${NC}"
@@ -1056,7 +1257,7 @@ restore_site() {
             return 1
         fi
     fi
-    
+
     # Move project to target location
     echo "Moving project to target location..."
     if sudo mv "$extracted_project" "$target_path"; then
@@ -1066,21 +1267,21 @@ restore_site() {
         rm -rf "$temp_extract_dir"
         return 1
     fi
-    
+
     # Set proper ownership and permissions
     sudo chown -R "$CURRENT_USER":www-data "$target_path"
     sudo find "$target_path" -type d -exec chmod 755 {} \;
     sudo find "$target_path" -type f -exec chmod 644 {} \;
-    
+
     # Detect if it's a Laravel project and set appropriate document root
     local is_laravel=false
     local document_root="$target_path"
-    
+
     if [ -f "$target_path/artisan" ] && [ -d "$target_path/app" ] && [ -f "$target_path/composer.json" ]; then
         is_laravel=true
         document_root="$target_path/public"
         echo -e "${GREEN}Laravel project detected!${NC}"
-        
+
         # Set Laravel-specific permissions
         for dir in storage bootstrap/cache; do
             if [ -d "$target_path/$dir" ]; then
@@ -1090,13 +1291,13 @@ restore_site() {
                 sudo chmod -R g+s "$target_path/$dir"
             fi
         done
-        
+
         # Set execute permissions for artisan
         if [ -f "$target_path/artisan" ]; then
             sudo chmod +x "$target_path/artisan"
         fi
     fi
-    
+
     # Restore database if dump exists
     local db_dump_file="$temp_extract_dir/$(basename "$temp_extract_dir")/db_dump.sql"
     if [ -f "$db_dump_file" ]; then
@@ -1107,7 +1308,7 @@ restore_site() {
             read -p "Enter database user: " db_user
             read -s -p "Enter database password: " db_pass
             echo ""
-            
+
             if [ -n "$db_name" ] && [ -n "$db_user" ] && [ -n "$db_pass" ]; then
                 echo "Restoring database..."
                 if mysql -u "$db_user" -p"$db_pass" "$db_name" < "$db_dump_file" 2>/dev/null; then
@@ -1120,17 +1321,17 @@ restore_site() {
             fi
         fi
     fi
-    
+
     # Clean up extraction directory
     rm -rf "$temp_extract_dir"
-    
+
     # Setup Nginx configuration
     setup_nginx "$restore_domain" "$document_root"
-    
+
     echo -e "${GREEN}✅ Project successfully restored!${NC}"
     echo -e "${GREEN}📁 Location: ${target_path}${NC}"
     echo -e "${GREEN}🌐 URL: http://${restore_domain}${NC}"
-    
+
     if [ "$is_laravel" = true ]; then
         echo -e "${YELLOW}💡 Laravel Tips:${NC}"
         echo "   • Check your .env file configuration"
@@ -1141,15 +1342,15 @@ restore_site() {
 
 setup_ssl() {
     local domain=$1
-    
+
     echo -e "${YELLOW}Setting up SSL Certificate${NC}"
-    
+
     # Validate domain parameter
     if [ -z "$domain" ]; then
         echo -e "${RED}❌ Domain name is required${NC}"
         return 1
     fi
-    
+
     # Check if nginx config exists for this domain
     local nginx_config="/etc/nginx/sites-available/$domain"
     if [ ! -f "$nginx_config" ]; then
@@ -1157,14 +1358,14 @@ setup_ssl() {
         echo -e "${YELLOW}💡 Please create the site first using site-manager${NC}"
         return 1
     fi
-    
+
     # Check if nginx config is enabled
     if [ ! -L "/etc/nginx/sites-enabled/$domain" ]; then
         echo -e "${YELLOW}⚠️  Nginx site is not enabled. Enabling now...${NC}"
         sudo ln -sf "$nginx_config" "/etc/nginx/sites-enabled/$domain"
         sudo nginx -t && sudo systemctl reload nginx
     fi
-    
+
     # Check if certbot is installed
     if ! command -v certbot &>/dev/null; then
         echo -e "${YELLOW}Installing Certbot and Nginx plugin...${NC}"
@@ -1177,14 +1378,14 @@ setup_ssl() {
     else
         echo -e "${GREEN}✅ Certbot is already installed${NC}"
     fi
-    
+
     # Prompt for email (required for Let's Encrypt)
     echo -e "\n${YELLOW}Let's Encrypt requires an email address for certificate registration${NC}"
     echo -e "${BLUE}This email will be used for:${NC}"
     echo "• Certificate expiry notifications"
     echo "• Important security updates"
     echo "• Account recovery"
-    
+
     while true; do
         read -p "Enter your email address: " email
         if [ -z "$email" ]; then
@@ -1203,7 +1404,7 @@ setup_ssl() {
             echo -e "${RED}Please enter a valid email address${NC}"
         fi
     done
-    
+
     # Test nginx configuration before proceeding
     echo -e "\n${YELLOW}Testing Nginx configuration...${NC}"
     if ! sudo nginx -t; then
@@ -1211,7 +1412,7 @@ setup_ssl() {
         echo -e "${YELLOW}Please fix nginx configuration before setting up SSL${NC}"
         return 1
     fi
-    
+
     # Check if domain is accessible (optional but recommended)
     echo -e "${YELLOW}Checking domain accessibility...${NC}"
     if curl -s --connect-timeout 5 "http://$domain" > /dev/null; then
@@ -1221,32 +1422,32 @@ setup_ssl() {
         echo -e "${BLUE}For Let's Encrypt to work, your domain must be:${NC}"
         echo "• Pointing to this server's public IP"
         echo "• Accessible from the internet on port 80"
-        
+
         read -p "Continue anyway? [y/N] " continue_ssl
         if [[ ! "$continue_ssl" =~ ^[Yy]$ ]]; then
             echo "SSL setup cancelled."
             return 1
         fi
     fi
-    
+
     # Request SSL certificate
     echo -e "\n${YELLOW}Requesting SSL certificate for $domain...${NC}"
     local certbot_cmd="sudo certbot --nginx -d $domain $email_flag --agree-tos --non-interactive"
-    
+
     # Add staging flag for testing (uncomment for testing)
     # certbot_cmd="$certbot_cmd --staging"
-    
+
     echo "Running: $certbot_cmd"
     if $certbot_cmd; then
         echo -e "${GREEN}✅ SSL certificate installed successfully!${NC}"
-        
+
         # Reload nginx to ensure new config is active
         if sudo systemctl reload nginx; then
             echo -e "${GREEN}✅ Nginx reloaded with SSL configuration${NC}"
         else
             echo -e "${YELLOW}⚠️  Warning: Failed to reload Nginx${NC}"
         fi
-        
+
         # Test HTTPS
         echo -e "\n${YELLOW}Testing HTTPS connection...${NC}"
         if curl -s --connect-timeout 5 "https://$domain" > /dev/null; then
@@ -1254,14 +1455,14 @@ setup_ssl() {
         else
             echo -e "${YELLOW}⚠️  HTTPS test failed - certificate might still be propagating${NC}"
         fi
-        
+
         echo -e "\n${GREEN}🎉 SSL setup completed successfully!${NC}"
         echo -e "${BLUE}💡 Important Information:${NC}"
         echo -e "• Your site is now available at: https://$domain"
         echo -e "• HTTP traffic will be automatically redirected to HTTPS"
         echo -e "• Certificate will auto-renew (Let's Encrypt handles this)"
         echo -e "• You can test renewal with: sudo certbot renew --dry-run"
-        
+
     else
         echo -e "${RED}❌ Failed to obtain SSL certificate${NC}"
         echo -e "${BLUE}💡 Common issues:${NC}"
@@ -1269,13 +1470,700 @@ setup_ssl() {
         echo "• Firewall blocking port 80/443"
         echo "• Domain not accessible from internet"
         echo "• Rate limiting (try again later)"
-        
+
         # Check certbot logs for more details
         echo -e "\n${YELLOW}Check certbot logs for details:${NC}"
         echo "  sudo tail -f /var/log/letsencrypt/letsencrypt.log"
-        
+
         return 1
     fi
+}
+
+update_ssl() {
+    local domain=$1
+    local CURRENT_USER
+    CURRENT_USER=$(get_current_user)
+
+    echo -e "${YELLOW}Update/Renew SSL Certificate${NC}"
+
+    # Get domain if not provided
+    if [ -z "$domain" ]; then
+        echo -e "\n${BLUE}Available domains with SSL certificates:${NC}"
+        if [ -d "/etc/letsencrypt/live" ]; then
+            local count=1
+            local domains=()
+
+            for cert_dir in /etc/letsencrypt/live/*; do
+                if [ -d "$cert_dir" ] && [ "$(basename "$cert_dir")" != "README" ]; then
+                    local domain_name=$(basename "$cert_dir")
+                    domains[count]="$domain_name"
+
+                    # Check certificate expiry
+                    local cert_file="$cert_dir/cert.pem"
+                    if [ -f "$cert_file" ]; then
+                        local expiry_date=$(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2)
+                        local days_left=$(( ($(date -d "$expiry_date" +%s) - $(date +%s)) / 86400 ))
+
+                        if [ $days_left -lt 30 ]; then
+                            echo "  $count) $domain_name ${RED}(expires in $days_left days)${NC}"
+                        elif [ $days_left -lt 60 ]; then
+                            echo "  $count) $domain_name ${YELLOW}(expires in $days_left days)${NC}"
+                        else
+                            echo "  $count) $domain_name ${GREEN}(expires in $days_left days)${NC}"
+                        fi
+                    else
+                        echo "  $count) $domain_name (unable to check expiry)"
+                    fi
+                    ((count++))
+                fi
+            done
+
+            if [ ${#domains[@]} -eq 0 ]; then
+                echo -e "${RED}❌ No SSL certificates found${NC}"
+                return 1
+            fi
+
+            echo -e "\n${YELLOW}Select a domain or enter domain name:${NC}"
+            read -p "Enter domain number (1-$((count-1))) or domain name: " selection
+
+            # Check if selection is a number
+            if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -lt "$count" ]; then
+                domain="${domains[$selection]}"
+            else
+                domain="$selection"
+            fi
+        else
+            read -p "Enter domain name: " domain
+        fi
+    fi
+
+    # Validate domain
+    if [ -z "$domain" ]; then
+        echo -e "${RED}❌ Domain name is required${NC}"
+        return 1
+    fi
+
+    # Check if certificate exists
+    if [ ! -d "/etc/letsencrypt/live/$domain" ]; then
+        echo -e "${RED}❌ No SSL certificate found for domain: $domain${NC}"
+        echo -e "${YELLOW}💡 Use 'Setup SSL' to create a new certificate${NC}"
+        return 1
+    fi
+
+    local cert_file="/etc/letsencrypt/live/$domain/cert.pem"
+
+    # Display current certificate information
+    echo -e "\n${BLUE}Current certificate information for $domain:${NC}"
+    if [ -f "$cert_file" ]; then
+        local issuer=$(openssl x509 -in "$cert_file" -noout -issuer | sed 's/.*CN=\([^,]*\).*/\1/')
+        local subject=$(openssl x509 -in "$cert_file" -noout -subject | sed 's/.*CN=\([^,]*\).*/\1/')
+        local not_before=$(openssl x509 -in "$cert_file" -noout -startdate | cut -d= -f2)
+        local not_after=$(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2)
+        local days_left=$(( ($(date -d "$not_after" +%s) - $(date +%s)) / 86400 ))
+
+        echo "  Subject: $subject"
+        echo "  Issuer: $issuer"
+        echo "  Valid from: $not_before"
+        echo "  Valid until: $not_after"
+
+        if [ $days_left -lt 0 ]; then
+            echo -e "  Status: ${RED}❌ EXPIRED ($((0 - days_left)) days ago)${NC}"
+        elif [ $days_left -lt 7 ]; then
+            echo -e "  Status: ${RED}⚠️  CRITICAL - Expires in $days_left days${NC}"
+        elif [ $days_left -lt 30 ]; then
+            echo -e "  Status: ${YELLOW}⚠️  WARNING - Expires in $days_left days${NC}"
+        else
+            echo -e "  Status: ${GREEN}✅ Valid for $days_left more days${NC}"
+        fi
+    fi
+
+    echo -e "\n${YELLOW}What would you like to do?${NC}"
+    echo "1) Renew certificate (recommended for expiring certs)"
+    echo "2) Force certificate renewal (recreate certificate)"
+    echo "3) Test certificate renewal (dry run)"
+    echo "4) Expand certificate (add more domains)"
+    echo "5) Check all certificates status"
+    echo "6) Cancel"
+
+    read -p "Select option [1-6]: " ssl_choice
+
+    case $ssl_choice in
+        1)
+            echo -e "\n${YELLOW}Renewing SSL certificate for $domain...${NC}"
+            renew_certificate "$domain"
+            ;;
+        2)
+            echo -e "\n${YELLOW}Force renewing SSL certificate for $domain...${NC}"
+            force_renew_certificate "$domain"
+            ;;
+        3)
+            echo -e "\n${YELLOW}Testing certificate renewal (dry run)...${NC}"
+            test_certificate_renewal "$domain"
+            ;;
+        4)
+            echo -e "\n${YELLOW}Expanding certificate to include more domains...${NC}"
+            expand_certificate "$domain"
+            ;;
+        5)
+            echo -e "\n${YELLOW}Checking all certificates status...${NC}"
+            check_all_certificates
+            ;;
+        6)
+            echo "Operation cancelled."
+            return 0
+            ;;
+        *)
+            echo -e "${RED}❌ Invalid option${NC}"
+            return 1
+            ;;
+    esac
+}
+
+renew_certificate() {
+    local domain=$1
+
+    echo "Attempting to renew certificate for $domain..."
+
+    if sudo certbot renew --cert-name "$domain"; then
+        echo -e "${GREEN}✅ Certificate renewed successfully!${NC}"
+
+        # Reload nginx
+        if sudo systemctl reload nginx; then
+            echo -e "${GREEN}✅ Nginx reloaded${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Warning: Failed to reload Nginx${NC}"
+        fi
+
+        # Test the renewed certificate
+        echo -e "\n${YELLOW}Testing renewed certificate...${NC}"
+        if curl -s --connect-timeout 5 "https://$domain" > /dev/null; then
+            echo -e "${GREEN}✅ HTTPS is working correctly${NC}"
+        else
+            echo -e "${YELLOW}⚠️  HTTPS test failed${NC}"
+        fi
+
+    else
+        echo -e "${RED}❌ Certificate renewal failed${NC}"
+        echo -e "${YELLOW}💡 Certificate might not be due for renewal yet${NC}"
+        echo -e "${BLUE}Certificates are automatically renewed when they have 30 days or less remaining${NC}"
+        return 1
+    fi
+}
+
+force_renew_certificate() {
+    local domain=$1
+
+    echo -e "${RED}⚠️  WARNING: This will force renewal even if not needed${NC}"
+    read -p "Are you sure you want to force renew? [y/N] " confirm
+
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Operation cancelled."
+        return 0
+    fi
+
+    echo "Force renewing certificate for $domain..."
+
+    if sudo certbot renew --cert-name "$domain" --force-renewal; then
+        echo -e "${GREEN}✅ Certificate force renewed successfully!${NC}"
+
+        # Reload nginx
+        if sudo systemctl reload nginx; then
+            echo -e "${GREEN}✅ Nginx reloaded${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Warning: Failed to reload Nginx${NC}"
+        fi
+
+    else
+        echo -e "${RED}❌ Certificate force renewal failed${NC}"
+        return 1
+    fi
+}
+
+test_certificate_renewal() {
+    local domain=$1
+
+    echo "Testing certificate renewal for $domain (dry run)..."
+
+    if sudo certbot renew --cert-name "$domain" --dry-run; then
+        echo -e "${GREEN}✅ Certificate renewal test passed!${NC}"
+        echo -e "${BLUE}Your certificate can be renewed successfully when needed${NC}"
+    else
+        echo -e "${RED}❌ Certificate renewal test failed${NC}"
+        echo -e "${YELLOW}There might be issues with your domain configuration${NC}"
+        return 1
+    fi
+}
+
+expand_certificate() {
+    local domain=$1
+
+    echo "Current certificate covers: $domain"
+    echo -e "\n${YELLOW}Enter additional domains to add to this certificate:${NC}"
+    echo -e "${BLUE}Examples: www.$domain, api.$domain, admin.$domain${NC}"
+    echo -e "${YELLOW}Enter domains separated by spaces:${NC}"
+
+    read -p "Additional domains: " additional_domains
+
+    if [ -z "$additional_domains" ]; then
+        echo "No additional domains specified."
+        return 0
+    fi
+
+    # Build the certbot command with all domains
+    local all_domains="$domain $additional_domains"
+    local domain_flags=""
+
+    for d in $all_domains; do
+        domain_flags="$domain_flags -d $d"
+    done
+
+    echo -e "\n${YELLOW}Expanding certificate to cover: $all_domains${NC}"
+    read -p "Continue? [y/N] " confirm
+
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Operation cancelled."
+        return 0
+    fi
+
+    # Use --expand flag to add domains to existing certificate
+    if sudo certbot --nginx $domain_flags --expand --non-interactive; then
+        echo -e "${GREEN}✅ Certificate expanded successfully!${NC}"
+        echo -e "${GREEN}Certificate now covers: $all_domains${NC}"
+
+        # Reload nginx
+        if sudo systemctl reload nginx; then
+            echo -e "${GREEN}✅ Nginx reloaded${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Warning: Failed to reload Nginx${NC}"
+        fi
+
+    else
+        echo -e "${RED}❌ Certificate expansion failed${NC}"
+        echo -e "${YELLOW}💡 Make sure all domains point to this server and are accessible${NC}"
+        return 1
+    fi
+}
+
+check_all_certificates() {
+    echo -e "${BLUE}Checking all SSL certificates...${NC}\n"
+
+    if [ ! -d "/etc/letsencrypt/live" ]; then
+        echo -e "${RED}❌ No certificates directory found${NC}"
+        return 1
+    fi
+
+    local cert_count=0
+    local expiring_soon=0
+    local expired=0
+
+    for cert_dir in /etc/letsencrypt/live/*; do
+        if [ -d "$cert_dir" ] && [ "$(basename "$cert_dir")" != "README" ]; then
+            local domain_name=$(basename "$cert_dir")
+            local cert_file="$cert_dir/cert.pem"
+
+            if [ -f "$cert_file" ]; then
+                cert_count=$((cert_count + 1))
+
+                local not_after=$(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2)
+                local days_left=$(( ($(date -d "$not_after" +%s) - $(date +%s)) / 86400 ))
+
+                printf "%-30s " "$domain_name"
+
+                if [ $days_left -lt 0 ]; then
+                    echo -e "${RED}❌ EXPIRED ($((0 - days_left)) days ago)${NC}"
+                    expired=$((expired + 1))
+                elif [ $days_left -lt 7 ]; then
+                    echo -e "${RED}⚠️  CRITICAL - $days_left days left${NC}"
+                    expiring_soon=$((expiring_soon + 1))
+                elif [ $days_left -lt 30 ]; then
+                    echo -e "${YELLOW}⚠️  WARNING - $days_left days left${NC}"
+                    expiring_soon=$((expiring_soon + 1))
+                else
+                    echo -e "${GREEN}✅ Valid for $days_left days${NC}"
+                fi
+            fi
+        fi
+    done
+
+    echo -e "\n${BLUE}Summary:${NC}"
+    echo "  Total certificates: $cert_count"
+    echo "  Expiring soon (< 30 days): $expiring_soon"
+    echo "  Expired: $expired"
+
+    if [ $expired -gt 0 ] || [ $expiring_soon -gt 0 ]; then
+        echo -e "\n${YELLOW}💡 Recommended actions:${NC}"
+        if [ $expired -gt 0 ]; then
+            echo "  • Renew expired certificates immediately"
+        fi
+        if [ $expiring_soon -gt 0 ]; then
+            echo "  • Schedule renewal for expiring certificates"
+        fi
+        echo "  • Set up automatic renewal: sudo crontab -e"
+        echo "    Add: 0 12 * * * /usr/bin/certbot renew --quiet"
+    else
+        echo -e "\n${GREEN}✅ All certificates are healthy!${NC}"
+    fi
+}
+
+
+
+fix_permissions() {
+    local CURRENT_USER
+    CURRENT_USER=$(get_current_user)
+
+    echo -e "${YELLOW}Fix Project Permissions${NC}"
+
+    # List existing projects in /var/www
+    echo -e "\n${BLUE}Available projects in $WEB_ROOT:${NC}"
+    if [ -d "$WEB_ROOT" ] && [ "$(ls -A "$WEB_ROOT" 2>/dev/null)" ]; then
+        local count=1
+        local projects=()
+
+        # Store projects in array and display them
+        for dir in "$WEB_ROOT"/*; do
+            if [ -d "$dir" ]; then
+                local project_name=$(basename "$dir")
+                projects[count]="$project_name"
+                echo "  $count) $project_name"
+                ((count++))
+            fi
+        done
+
+        if [ ${#projects[@]} -eq 0 ]; then
+            echo -e "${RED}❌ No projects found in $WEB_ROOT${NC}"
+            return 1
+        fi
+
+        echo -e "\n${YELLOW}Select a project or enter a custom path:${NC}"
+        read -p "Enter project number (1-$((count-1))) or full path: " selection
+
+        local project_path=""
+        local project_name=""
+
+        # Check if selection is a number
+        if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -lt "$count" ]; then
+            project_name="${projects[$selection]}"
+            project_path="$WEB_ROOT/$project_name"
+        else
+            # Treat as custom path
+            project_path=$(realpath "$selection" 2>/dev/null)
+            if [ -z "$project_path" ] || [ ! -d "$project_path" ]; then
+                echo -e "${RED}❌ Invalid selection or path does not exist: $selection${NC}"
+                return 1
+            fi
+            project_name=$(basename "$project_path")
+        fi
+
+        echo "Selected project: $project_name"
+        echo "Project path: $project_path"
+
+    else
+        echo -e "${RED}❌ $WEB_ROOT directory is empty or does not exist${NC}"
+        echo -e "${YELLOW}💡 Use 'Create New Project' or 'Move Project' first${NC}"
+        return 1
+    fi
+
+    # Detect project type
+    local is_laravel=false
+
+    if [ -f "$project_path/artisan" ] && [ -d "$project_path/app" ] && [ -f "$project_path/composer.json" ]; then
+        is_laravel=true
+        echo -e "${GREEN}Laravel project detected!${NC}"
+    else
+        echo "Standard PHP project detected."
+    fi
+
+    echo -e "\n${YELLOW}What type of permission fix do you need?${NC}"
+    echo -e "${BLUE}🔧 Permission Fix Options:${NC}"
+    echo ""
+    echo -e "${GREEN}1) Quick Fix (recommended)${NC} - Fix common permission issues"
+    echo -e "   ${BLUE}What it does:${NC}"
+    echo -e "   • Sets owner to your user (${USER}) and group to www-data"
+    echo -e "   • Directories: 755 (you: read/write/execute, others: read/execute)"
+    echo -e "   • Files: 644 (you: read/write, others: read only)"
+    echo -e "   • Laravel storage/cache: 775 (group writable for web server)"
+    echo -e "   ${YELLOW}Use when:${NC} File uploads fail, cache errors, general permission issues"
+    echo ""
+    echo -e "${GREEN}2) Full Reset${NC} - Complete permission reset (more thorough)"
+    echo -e "   ${BLUE}What it does:${NC}"
+    echo -e "   • Everything from Quick Fix PLUS:"
+    echo -e "   • Advanced ACL permissions (setfacl) for better web server access"
+    echo -e "   • Clears all Laravel caches (application, config, views)"
+    echo -e "   • Sets sticky bit (g+s) so new files inherit group ownership"
+    echo -e "   ${YELLOW}Use when:${NC} Quick fix didn't work, after major updates, deployment issues"
+    echo ""
+    echo -e "${GREEN}3) Laravel Specific${NC} - Fix Laravel storage/cache/database issues only"
+    echo -e "   ${BLUE}What it does:${NC}"
+    echo -e "   • Focuses ONLY on Laravel critical directories:"
+    echo -e "     - storage/framework/views (where your error occurred)"
+    echo -e "     - storage/framework/cache, storage/framework/sessions"
+    echo -e "     - storage/logs, bootstrap/cache"
+    echo -e "   • Fixes SQLite database permissions (your specific issue!)"
+    echo -e "   • Creates missing Laravel directories if needed"
+    echo -e "   • Runs database migrations"
+    echo -e "   ${YELLOW}Use when:${NC} Laravel errors like 'readonly database', view compilation fails"
+    echo ""
+    echo -e "${GREEN}4) Web Server Only${NC} - Basic web permissions"
+    echo -e "   ${BLUE}What it does:${NC}"
+    echo -e "   • Just basic web server permissions:"
+    echo -e "   • Owner: your user, Group: www-data"
+    echo -e "   • Directories: 755, Files: 644"
+    echo -e "   • Makes sure www-data group can read everything"
+    echo -e "   • NO special Laravel handling"
+    echo -e "   ${YELLOW}Use when:${NC} Non-Laravel projects, simple PHP sites, static websites"
+    echo ""
+
+    read -p "Select option [1-4]: " fix_type
+
+    case $fix_type in
+        1|"")
+            echo -e "\n${YELLOW}Applying quick permission fix...${NC}"
+            # Basic ownership
+            sudo chown -R "$CURRENT_USER":www-data "$project_path"
+
+            # Basic permissions
+            sudo find "$project_path" -type d -exec chmod 755 {} \;
+            sudo find "$project_path" -type f -exec chmod 644 {} \;
+
+            if [ "$is_laravel" = true ]; then
+                # Laravel specific directories
+                for dir in storage bootstrap/cache; do
+                    if [ -d "$project_path/$dir" ]; then
+                        echo "Fixing permissions for $dir..."
+                        sudo chown -R "$CURRENT_USER":www-data "$project_path/$dir"
+                        sudo find "$project_path/$dir" -type d -exec chmod 775 {} \;
+                        sudo find "$project_path/$dir" -type f -exec chmod 664 {} \;
+                        sudo chmod -R g+s "$project_path/$dir"
+                    fi
+                done
+
+                # Handle database directory if exists
+                if [ -d "$project_path/database" ]; then
+                    sudo chown -R "$CURRENT_USER":www-data "$project_path/database"
+                    sudo find "$project_path/database" -type d -exec chmod 775 {} \;
+                    sudo find "$project_path/database" -type f -exec chmod 664 {} \;
+                    sudo chmod -R g+s "$project_path/database"
+                fi
+
+                # Make artisan executable
+                if [ -f "$project_path/artisan" ]; then
+                    sudo chmod +x "$project_path/artisan"
+                fi
+            fi
+            ;;
+
+        2)
+            echo -e "\n${YELLOW}Applying full permission reset...${NC}"
+
+            # Reset ownership completely
+            sudo chown -R "$CURRENT_USER":www-data "$project_path"
+
+            # Remove all permissions and set fresh ones
+            sudo find "$project_path" -type d -exec chmod 755 {} \;
+            sudo find "$project_path" -type f -exec chmod 644 {} \;
+
+            if [ "$is_laravel" = true ]; then
+                # Laravel writable directories with more aggressive settings
+                for dir in storage bootstrap/cache; do
+                    if [ -d "$project_path/$dir" ]; then
+                        echo "Full reset for $dir..."
+                        sudo chown -R "$CURRENT_USER":www-data "$project_path/$dir"
+                        sudo find "$project_path/$dir" -type d -exec chmod 775 {} \;
+                        sudo find "$project_path/$dir" -type f -exec chmod 664 {} \;
+                        sudo chmod -R g+s "$project_path/$dir"
+
+                        # Ensure www-data can write
+                        sudo setfacl -R -m u:www-data:rwx "$project_path/$dir" 2>/dev/null || true
+                        sudo setfacl -R -d -m u:www-data:rwx "$project_path/$dir" 2>/dev/null || true
+                    fi
+                done
+
+                # Database permissions
+                if [ -d "$project_path/database" ]; then
+                    sudo chown -R "$CURRENT_USER":www-data "$project_path/database"
+                    sudo find "$project_path/database" -type d -exec chmod 775 {} \;
+                    sudo find "$project_path/database" -type f -exec chmod 664 {} \;
+                    sudo chmod -R g+s "$project_path/database"
+                fi
+
+                # Make artisan executable
+                if [ -f "$project_path/artisan" ]; then
+                    sudo chmod +x "$project_path/artisan"
+                fi
+
+                # Clear Laravel caches
+                echo "Clearing Laravel caches..."
+                sudo -u "$CURRENT_USER" bash -c "cd '$project_path' && php artisan cache:clear" 2>/dev/null || true
+                sudo -u "$CURRENT_USER" bash -c "cd '$project_path' && php artisan config:clear" 2>/dev/null || true
+                sudo -u "$CURRENT_USER" bash -c "cd '$project_path' && php artisan view:clear" 2>/dev/null || true
+            fi
+            ;;
+
+        3)
+            if [ "$is_laravel" != true ]; then
+                echo -e "${RED}❌ This is not a Laravel project!${NC}"
+                return 1
+            fi
+
+            echo -e "\n${YELLOW}Applying Laravel-specific permission fix...${NC}"
+
+            # Focus only on Laravel critical directories
+            for dir in storage bootstrap/cache; do
+                if [ -d "$project_path/$dir" ]; then
+                    echo "Fixing Laravel permissions for $dir..."
+                    sudo chown -R "$CURRENT_USER":www-data "$project_path/$dir"
+
+                    # Remove and recreate with proper permissions
+                    sudo find "$project_path/$dir" -type d -exec chmod 775 {} \;
+                    sudo find "$project_path/$dir" -type f -exec chmod 664 {} \;
+
+                    # Set group sticky bit
+                    sudo chmod -R g+s "$project_path/$dir"
+
+                    # Advanced ACL if available
+                    if command -v setfacl &>/dev/null; then
+                        echo "Setting advanced ACL permissions..."
+                        sudo setfacl -R -m u:www-data:rwx "$project_path/$dir"
+                        sudo setfacl -R -d -m u:www-data:rwx "$project_path/$dir"
+                        sudo setfacl -R -m g:www-data:rwx "$project_path/$dir"
+                        sudo setfacl -R -d -m g:www-data:rwx "$project_path/$dir"
+                    fi
+                fi
+            done
+
+            # Ensure specific Laravel subdirectories exist with correct permissions
+            local laravel_dirs=(
+                "storage/app"
+                "storage/framework/cache"
+                "storage/framework/sessions"
+                "storage/framework/views"
+                "storage/logs"
+                "bootstrap/cache"
+            )
+
+            for dir in "${laravel_dirs[@]}"; do
+                if [ ! -d "$project_path/$dir" ]; then
+                    echo "Creating missing directory: $dir"
+                    sudo -u "$CURRENT_USER" mkdir -p "$project_path/$dir"
+                fi
+                sudo chown -R "$CURRENT_USER":www-data "$project_path/$dir"
+                sudo chmod -R 775 "$project_path/$dir"
+                sudo chmod -R g+s "$project_path/$dir"
+            done
+
+            # Fix SQLite database permissions (common issue)
+            echo "Checking for SQLite database files..."
+
+            # Check database directory
+            if [ -d "$project_path/database" ]; then
+                # Find .sqlite files
+                local sqlite_files=($(find "$project_path/database" -name "*.sqlite" 2>/dev/null))
+
+                if [ ${#sqlite_files[@]} -gt 0 ]; then
+                    echo "Found SQLite database files, fixing permissions..."
+                    for sqlite_file in "${sqlite_files[@]}"; do
+                        echo "Fixing permissions for: $(basename "$sqlite_file")"
+                        sudo chown "$CURRENT_USER":www-data "$sqlite_file"
+                        sudo chmod 664 "$sqlite_file"
+
+                        # Ensure the directory is writable too
+                        sudo chmod 775 "$(dirname "$sqlite_file")"
+                    done
+                fi
+
+                # Also check for common Laravel database file names
+                local common_db_files=(
+                    "$project_path/database/database.sqlite"
+                    "$project_path/storage/database.sqlite"
+                    "$project_path/database.sqlite"
+                )
+
+                for db_file in "${common_db_files[@]}"; do
+                    if [ -f "$db_file" ]; then
+                        echo "Fixing permissions for: $(basename "$db_file")"
+                        sudo chown "$CURRENT_USER":www-data "$db_file"
+                        sudo chmod 664 "$db_file"
+                        sudo chmod 775 "$(dirname "$db_file")"
+                    fi
+                done
+            fi
+
+            # Check .env file for SQLite configuration and create database if needed
+            if [ -f "$project_path/.env" ]; then
+                local db_connection=$(grep "^DB_CONNECTION=" "$project_path/.env" | cut -d'=' -f2)
+                local db_database=$(grep "^DB_DATABASE=" "$project_path/.env" | cut -d'=' -f2)
+
+                if [[ "$db_connection" == "sqlite" ]]; then
+                    echo "SQLite configuration detected in .env file"
+
+                    if [ -n "$db_database" ] && [ ! -f "$project_path/$db_database" ]; then
+                        echo "Creating missing SQLite database: $db_database"
+                        sudo -u "$CURRENT_USER" touch "$project_path/$db_database"
+                        sudo chown "$CURRENT_USER":www-data "$project_path/$db_database"
+                        sudo chmod 664 "$project_path/$db_database"
+                        sudo chmod 775 "$(dirname "$project_path/$db_database")"
+                    elif [ -n "$db_database" ] && [ -f "$project_path/$db_database" ]; then
+                        echo "Fixing permissions for .env database: $db_database"
+                        sudo chown "$CURRENT_USER":www-data "$project_path/$db_database"
+                        sudo chmod 664 "$project_path/$db_database"
+                        sudo chmod 775 "$(dirname "$project_path/$db_database")"
+                    fi
+                fi
+            fi
+
+            # Clear caches
+            echo "Clearing Laravel caches..."
+            sudo -u "$CURRENT_USER" bash -c "cd '$project_path' && php artisan cache:clear" 2>/dev/null || echo "Cache clear skipped (not available)"
+            sudo -u "$CURRENT_USER" bash -c "cd '$project_path' && php artisan config:clear" 2>/dev/null || echo "Config clear skipped (not available)"
+            sudo -u "$CURRENT_USER" bash -c "cd '$project_path' && php artisan view:clear" 2>/dev/null || echo "View clear skipped (not available)"
+
+            # Try to run migrations if SQLite database exists
+            if [ -f "$project_path/.env" ]; then
+                local db_connection=$(grep "^DB_CONNECTION=" "$project_path/.env" | cut -d'=' -f2)
+                if [[ "$db_connection" == "sqlite" ]]; then
+                    read -p "Run database migrations to ensure tables exist? [Y/n] " run_migrations
+                    if [[ ! "$run_migrations" =~ ^[Nn]$ ]]; then
+                        echo "Running Laravel migrations..."
+                        sudo -u "$CURRENT_USER" bash -c "cd '$project_path' && php artisan migrate --force" 2>/dev/null || echo "Migration skipped (not available or failed)"
+                    fi
+                fi
+            fi
+            ;;
+
+        4)
+            echo -e "\n${YELLOW}Applying basic web server permissions...${NC}"
+
+            # Basic web permissions
+            sudo chown -R "$CURRENT_USER":www-data "$project_path"
+            sudo find "$project_path" -type d -exec chmod 755 {} \;
+            sudo find "$project_path" -type f -exec chmod 644 {} \;
+
+            # Make sure www-data can read everything
+            sudo chmod -R g+r "$project_path"
+            ;;
+
+        *)
+            echo -e "${RED}❌ Invalid option selected${NC}"
+            return 1
+            ;;
+    esac
+
+    echo -e "\n${GREEN}✅ Permissions fixed successfully!${NC}"
+    echo -e "${GREEN}📁 Project: ${project_name}${NC}"
+    echo -e "${GREEN}📂 Location: ${project_path}${NC}"
+
+    if [ "$is_laravel" = true ]; then
+        echo -e "\n${BLUE}💡 Laravel Permission Tips:${NC}"
+        echo "   • If you still have issues, try: sudo chmod -R 777 storage (temporary)"
+        echo "   • For production, consider: sudo chown -R www-data:www-data storage"
+        echo "   • Check SELinux if enabled: sudo setsebool -P httpd_unified 1"
+        echo "   • Verify .env file permissions: chmod 644 .env"
+    fi
+
+    echo -e "\n${YELLOW}💡 General Tips:${NC}"
+    echo "   • If problems persist, check file ownership with: ls -la"
+    echo "   • Verify nginx/apache user matches www-data group"
+    echo "   • For development, you might need: sudo usermod -aG www-data \$USER"
 }
 
 # ---------- Main Program ----------
@@ -1295,6 +2183,15 @@ case "$1" in
     ssl)
         setup_ssl "$2"
         ;;
+    update-ssl)
+        update_ssl "$2"
+        ;;
+    configure)
+        configure_existing_project
+        ;;
+    fix-permissions)
+        fix_permissions
+        ;;
     *)
         while true; do
             show_header
@@ -1306,8 +2203,11 @@ case "$1" in
             echo "5) Backup Project"
             echo "6) Restore Project"
             echo "7) Setup SSL"
-            echo "8) Exit"
-            read -p "Select operation [1-8]: " choice
+            echo "8) Configure Existing Project"
+            echo "9) Fix Project Permissions"
+            echo "10) Update/Renew SSL Certificate"
+            echo "11) Exit"
+            read -p "Select operation [1-11]: " choice
             case $choice in
                 1) create_site ;;
                 2) delete_site ;;
@@ -1316,7 +2216,10 @@ case "$1" in
                 5) read -p "Enter domain to backup: " d; backup_site "$d" ;;
                 6) read -p "Enter backup path: " p; restore_site "$p" ;;
                 7) read -p "Enter domain for SSL: " d; setup_ssl "$d" ;;
-                8) exit 0 ;;
+                8) configure_existing_project ;;
+                9) fix_permissions ;;
+                10) update_ssl ;;
+                11) exit 0 ;;
                 *) echo "Invalid option!" ;;
             esac
             read -p "Press Enter to continue..."
