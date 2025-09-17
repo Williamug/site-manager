@@ -3135,6 +3135,268 @@ fix_permissions() {
     echo "   • For development, you might need: sudo usermod -aG www-data \$USER"
 }
 
+# Enhanced SSL status checking for all certificate types
+check_ssl_status() {
+    local domain=$1
+    local CURRENT_USER
+    CURRENT_USER=$(get_current_user)
+
+    echo -e "${YELLOW}SSL Status Checker${NC}"
+
+    # Get domain if not provided
+    if [ -z "$domain" ]; then
+        echo -e "\n${BLUE}Available domains:${NC}"
+
+        # Collect all domains from nginx configs
+        local count=1
+        local domains=()
+        local has_domains=false
+
+        if [ -d "/etc/nginx/sites-available" ]; then
+            for config_file in /etc/nginx/sites-available/*; do
+                if [ -f "$config_file" ] && [ "$(basename "$config_file")" != "default" ]; then
+                    local domain_name=$(basename "$config_file")
+                    domains[count]="$domain_name"
+
+                    # Check SSL status for display
+                    local ssl_status="HTTP only"
+                    local ssl_color="${YELLOW}"
+
+                    if grep -q "listen 443" "$config_file" || grep -q "ssl_certificate" "$config_file"; then
+                        ssl_status="HTTPS enabled"
+                        ssl_color="${GREEN}"
+                    fi
+
+                    echo -e "  $count) $domain_name ${ssl_color}($ssl_status)${NC}"
+                    ((count++))
+                    has_domains=true
+                fi
+            done
+        fi
+
+        if [ "$has_domains" = false ]; then
+            echo -e "${RED}❌ No domains found${NC}"
+            echo -e "${YELLOW}💡 Create a site first using: sudo site-manager${NC}"
+            return 1
+        fi
+
+        echo -e "\n${YELLOW}Select a domain or enter domain name:${NC}"
+        read -p "Enter domain number (1-$((count-1))) or domain name: " selection
+
+        # Check if selection is a number
+        if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -lt "$count" ]; then
+            domain="${domains[$selection]}"
+        else
+            domain="$selection"
+        fi
+    fi
+
+    # Validate domain
+    if [ -z "$domain" ]; then
+        echo -e "${RED}❌ Domain name is required${NC}"
+        return 1
+    fi
+
+    echo -e "\n${BLUE}🔍 SSL Status for: $domain${NC}"
+    echo "=================================================="
+
+    # Check if nginx config exists
+    local nginx_config="/etc/nginx/sites-available/$domain"
+    if [ ! -f "$nginx_config" ]; then
+        echo -e "${RED}❌ Nginx configuration not found for domain: $domain${NC}"
+        echo -e "${YELLOW}💡 The domain might not be managed by site-manager${NC}"
+        return 1
+    fi
+
+    # Check Nginx SSL configuration
+    local has_ssl_nginx=false
+    local nginx_cert_path=""
+    local nginx_key_path=""
+
+    if grep -q "listen 443" "$nginx_config" || grep -q "ssl_certificate" "$nginx_config"; then
+        has_ssl_nginx=true
+        nginx_cert_path=$(grep "ssl_certificate " "$nginx_config" | head -1 | awk '{print $2}' | tr -d ';')
+        nginx_key_path=$(grep "ssl_certificate_key" "$nginx_config" | head -1 | awk '{print $2}' | tr -d ';')
+    fi
+
+    echo -e "\n${YELLOW}📋 Nginx Configuration:${NC}"
+    if [ "$has_ssl_nginx" = true ]; then
+        echo -e "  • SSL Configuration: ${GREEN}✅ Enabled${NC}"
+        echo -e "  • Certificate Path: $nginx_cert_path"
+        echo -e "  • Private Key Path: $nginx_key_path"
+
+        # Check if certificate files actually exist
+        if [ -f "$nginx_cert_path" ]; then
+            echo -e "  • Certificate File: ${GREEN}✅ Exists${NC}"
+        else
+            echo -e "  • Certificate File: ${RED}❌ Missing${NC}"
+        fi
+
+        if [ -f "$nginx_key_path" ]; then
+            echo -e "  • Private Key File: ${GREEN}✅ Exists${NC}"
+        else
+            echo -e "  • Private Key File: ${RED}❌ Missing${NC}"
+        fi
+    else
+        echo -e "  • SSL Configuration: ${RED}❌ Not configured (HTTP only)${NC}"
+    fi
+
+    # Check Let's Encrypt certificate
+    echo -e "\n${YELLOW}🔒 Let's Encrypt Certificate:${NC}"
+    local has_letsencrypt=false
+    if [ -d "/etc/letsencrypt/live/$domain" ]; then
+        has_letsencrypt=true
+        local cert_file="/etc/letsencrypt/live/$domain/cert.pem"
+
+        if [ -f "$cert_file" ]; then
+            echo -e "  • Status: ${GREEN}✅ Found${NC}"
+
+            # Get certificate details
+            local not_after=$(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2)
+            local not_before=$(openssl x509 -in "$cert_file" -noout -startdate | cut -d= -f2)
+            local issuer=$(openssl x509 -in "$cert_file" -noout -issuer | sed 's/issuer=//')
+            local subject=$(openssl x509 -in "$cert_file" -noout -subject | sed 's/subject=//')
+            local days_left=$(( ($(date -d "$not_after" +%s) - $(date +%s)) / 86400 ))
+
+            echo -e "  • Issuer: $issuer"
+            echo -e "  • Subject: $subject"
+            echo -e "  • Valid From: $not_before"
+            echo -e "  • Valid Until: $not_after"
+
+            if [ $days_left -lt 0 ]; then
+                echo -e "  • Status: ${RED}❌ EXPIRED ($((0 - days_left)) days ago)${NC}"
+            elif [ $days_left -lt 7 ]; then
+                echo -e "  • Status: ${RED}⚠️  CRITICAL - Expires in $days_left days${NC}"
+            elif [ $days_left -lt 30 ]; then
+                echo -e "  • Status: ${YELLOW}⚠️  WARNING - Expires in $days_left days${NC}"
+            else
+                echo -e "  • Status: ${GREEN}✅ Valid for $days_left more days${NC}"
+            fi
+        else
+            echo -e "  • Status: ${YELLOW}⚠️  Directory exists but certificate missing${NC}"
+        fi
+    else
+        echo -e "  • Status: ${RED}❌ Not found${NC}"
+    fi
+
+    # Check self-signed certificate
+    echo -e "\n${YELLOW}🔐 Self-Signed Certificate:${NC}"
+    local has_selfsigned=false
+    local selfsigned_cert="/etc/ssl/site-manager/$domain.crt"
+    local selfsigned_key="/etc/ssl/site-manager/$domain.key"
+
+    if [ -f "$selfsigned_cert" ]; then
+        has_selfsigned=true
+        echo -e "  • Status: ${GREEN}✅ Found${NC}"
+        echo -e "  • Certificate: $selfsigned_cert"
+        echo -e "  • Private Key: $selfsigned_key"
+
+        # Get certificate details
+        local not_after=$(openssl x509 -in "$selfsigned_cert" -noout -enddate | cut -d= -f2)
+        local not_before=$(openssl x509 -in "$selfsigned_cert" -noout -startdate | cut -d= -f2)
+        local issuer=$(openssl x509 -in "$selfsigned_cert" -noout -issuer | sed 's/issuer=//')
+        local subject=$(openssl x509 -in "$selfsigned_cert" -noout -subject | sed 's/subject=//')
+        local days_left=$(( ($(date -d "$not_after" +%s) - $(date +%s)) / 86400 ))
+
+        echo -e "  • Issuer: $issuer"
+        echo -e "  • Subject: $subject"
+        echo -e "  • Valid From: $not_before"
+        echo -e "  • Valid Until: $not_after"
+
+        if [ $days_left -lt 0 ]; then
+            echo -e "  • Status: ${RED}❌ EXPIRED ($((0 - days_left)) days ago)${NC}"
+        elif [ $days_left -lt 365 ]; then
+            echo -e "  • Status: ${YELLOW}⚠️  Expires in $days_left days${NC}"
+        else
+            echo -e "  • Status: ${GREEN}✅ Valid for $days_left more days${NC}"
+        fi
+
+        # Check if key file exists
+        if [ -f "$selfsigned_key" ]; then
+            echo -e "  • Private Key: ${GREEN}✅ Exists${NC}"
+        else
+            echo -e "  • Private Key: ${RED}❌ Missing${NC}"
+        fi
+    else
+        echo -e "  • Status: ${RED}❌ Not found${NC}"
+    fi
+
+    # Overall SSL summary
+    echo -e "\n${YELLOW}📊 SSL Summary:${NC}"
+    if [ "$has_ssl_nginx" = false ]; then
+        echo -e "  • Overall Status: ${YELLOW}HTTP Only${NC}"
+        echo -e "  • Recommendation: Set up SSL with 'sudo site-manager ssl $domain'"
+    elif [ "$has_letsencrypt" = true ] && [ "$has_ssl_nginx" = true ]; then
+        echo -e "  • Overall Status: ${GREEN}HTTPS with Let's Encrypt${NC}"
+        echo -e "  • Type: Production SSL (trusted by browsers)"
+    elif [ "$has_selfsigned" = true ] && [ "$has_ssl_nginx" = true ]; then
+        echo -e "  • Overall Status: ${GREEN}HTTPS with Self-Signed Certificate${NC}"
+        echo -e "  • Type: Development SSL (browser warnings expected)"
+    elif [ "$has_ssl_nginx" = true ]; then
+        echo -e "  • Overall Status: ${YELLOW}HTTPS Configured but Certificate Issues${NC}"
+        echo -e "  • Issue: SSL enabled in Nginx but certificate files missing/invalid"
+    fi
+
+    # Connection test
+    echo -e "\n${YELLOW}🌐 Connection Test:${NC}"
+
+    # Test HTTP
+    if curl -s --connect-timeout 5 "http://$domain" > /dev/null 2>&1; then
+        echo -e "  • HTTP (port 80): ${GREEN}✅ Accessible${NC}"
+    else
+        echo -e "  • HTTP (port 80): ${RED}❌ Not accessible${NC}"
+    fi
+
+    # Test HTTPS if SSL is configured
+    if [ "$has_ssl_nginx" = true ]; then
+        if curl -k -s --connect-timeout 5 "https://$domain" > /dev/null 2>&1; then
+            echo -e "  • HTTPS (port 443): ${GREEN}✅ Accessible${NC}"
+
+            # Test certificate validation
+            if curl -s --connect-timeout 5 "https://$domain" > /dev/null 2>&1; then
+                echo -e "  • Certificate Validation: ${GREEN}✅ Trusted${NC}"
+            else
+                echo -e "  • Certificate Validation: ${YELLOW}⚠️  Self-signed/Untrusted${NC}"
+            fi
+        else
+            echo -e "  • HTTPS (port 443): ${RED}❌ Not accessible${NC}"
+        fi
+    else
+        echo -e "  • HTTPS (port 443): ${YELLOW}N/A (SSL not configured)${NC}"
+    fi
+
+    # Domain type detection
+    echo -e "\n${YELLOW}🔍 Domain Analysis:${NC}"
+    if [[ "$domain" =~ \.(test|local|dev)$ ]] || [[ "$domain" =~ ^localhost ]]; then
+        echo -e "  • Domain Type: ${BLUE}Local Development${NC}"
+        echo -e "  • Recommended SSL: Self-signed certificate"
+        echo -e "  • Note: Let's Encrypt cannot issue certificates for local domains"
+    else
+        echo -e "  • Domain Type: ${BLUE}Public Domain${NC}"
+        echo -e "  • Recommended SSL: Let's Encrypt certificate"
+        echo -e "  • Note: Domain must be accessible from the internet"
+    fi
+
+    # Available actions
+    echo -e "\n${YELLOW}🛠️  Available Actions:${NC}"
+
+    if [ "$has_ssl_nginx" = false ]; then
+        echo -e "  • Setup SSL: ${GREEN}sudo site-manager ssl $domain${NC}"
+    else
+        if [ "$has_letsencrypt" = true ]; then
+            echo -e "  • Update/Renew SSL: ${GREEN}sudo site-manager update-ssl${NC}"
+        fi
+        if [ "$has_selfsigned" = true ] || [ "$has_letsencrypt" = true ]; then
+            echo -e "  • Remove SSL: ${GREEN}sudo site-manager remove-ssl $domain${NC}"
+        fi
+        if [ "$has_ssl_nginx" = true ] && [ "$has_letsencrypt" = false ] && [ "$has_selfsigned" = false ]; then
+            echo -e "  • Fix SSL: ${YELLOW}Recreate missing certificates${NC}"
+        fi
+    fi
+
+    echo -e "  • Check All Certificates: ${GREEN}sudo site-manager check-ssl${NC}"
+}
+
 # ---------- Main Program ----------
 case "$1" in
     check)
@@ -3164,6 +3426,9 @@ case "$1" in
     remove-ssl)
         remove_ssl "$2"
         ;;
+    check-ssl)
+        check_ssl_status "$2"
+        ;;
     *)
         while true; do
             show_header
@@ -3179,8 +3444,9 @@ case "$1" in
             echo "9) Fix Project Permissions"
             echo "10) Update/Renew SSL Certificate"
             echo "11) Remove SSL Certificate"
-            echo "12) Exit"
-            read -p "Select operation [1-12]: " choice
+            echo "12) Check SSL Status"
+            echo "13) Exit"
+            read -p "Select operation [1-13]: " choice
             case $choice in
                 1) create_site ;;
                 2) delete_site ;;
@@ -3193,7 +3459,8 @@ case "$1" in
                 9) fix_permissions ;;
                 10) update_ssl ;;
                 11) read -p "Enter domain to remove SSL: " d; remove_ssl "$d" ;;
-                12) exit 0 ;;
+                12) read -p "Enter domain to check SSL status: " d; check_ssl_status "$d" ;;
+                13) exit 0 ;;
                 *) echo "Invalid option!" ;;
             esac
             read -p "Press Enter to continue..."
