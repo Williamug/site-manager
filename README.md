@@ -6,7 +6,7 @@
 ![Downloads](https://img.shields.io/github/downloads/williamug/site-manager/total?style=flat-square&logo=github)
 ![Stars](https://img.shields.io/github/stars/williamug/site-manager?style=flat-square&logo=github)
 
-A comprehensive solution for server administration and web project management with advanced SSL, backup, and permission management features.
+A comprehensive solution for server administration and web project management with advanced SSL, backup, and permission management features. **Now with Laravel Valet-style self-signed certificates for local development!**
 
 ## Features
 
@@ -24,10 +24,20 @@ A comprehensive solution for server administration and web project management wi
 - **Site Deletion**: Clean removal of projects, configurations, and files
 
 ### SSL & Security
-- **Let's Encrypt Integration**: Automatic SSL certificate setup and configuration
-- **Certificate Management**: Renew, update, and expand existing certificates
+- **Smart SSL Detection**: Automatically detects local vs public domains
+- **Let's Encrypt Integration**: Automatic SSL certificate setup for public domains
+- **Self-Signed Certificates**: HTTPS for local development (.test, .local, .dev)
+- **Certificate Management**: Renew, update, expand, and remove existing certificates
 - **Certificate Monitoring**: Check expiration status across all domains
-- **Security Headers**: Automatic security header configuration
+- **Complete SSL Removal**: Clean removal of SSL configurations and certificates
+- **Security Headers**: Automatic security header configuration with modern TLS protocols
+
+### Local Development SSL
+- **Automatic Detection**: Smart recognition of `.test`, `.local`, `.dev`, and `localhost` domains
+- **Full HTTPS Support**: Complete SSL/TLS functionality for local development
+- **Long-Term Certificates**: 10-year validity for hassle-free development
+- **Modern Security**: TLS 1.2/1.3 protocols with strong cipher suites
+- **Browser Trust**: Optional system-wide certificate trust installation
 
 ### Backup & Restore
 - **Comprehensive Backups**: Full project code and database backups
@@ -43,22 +53,13 @@ A comprehensive solution for server administration and web project management wi
 - **Web Server Only**: Basic web server permissions for simple projects
 - **SQLite Support**: Automatic SQLite database permission handling
 
-## Installation
-
+### Installation
 ```bash
 # Install Site Manager
-sudo curl -L https://raw.githubusercontent.com/williamug/site-manager/main/site-manager.sh -o /usr/local/bin/site-manager
-
-sudo chmod +x /usr/local/bin/site-manager
+curl -s https://api.github.com/repos/williamug/site-manager/releases/latest | grep browser_download_url | cut -d '"' -f 4 | wget -qi - && sudo chmod +x site-manager.sh && sudo mv site-manager.sh /usr/local/bin/site-manager
 
 # Verify installation
 site-manager check
-```
-
-### Alternative Installation with Analytics
-```bash
-# One-liner installation with install tracking
-curl -s https://api.github.com/repos/williamug/site-manager/releases/latest | grep browser_download_url | cut -d '"' -f 4 | wget -qi - && sudo chmod +x site-manager.sh && sudo mv site-manager.sh /usr/local/bin/site-manager
 ```
 
 ## Uninstallation
@@ -102,8 +103,9 @@ sudo site-manager
 ### SSL Management
 | Command | Description | Example |
 |---------|-------------|---------|
-| `ssl <domain>` | Setup Let's Encrypt SSL | `sudo site-manager ssl example.com` |
+| `ssl <domain>` | Setup SSL (auto-detects local vs public) | `sudo site-manager ssl example.test` |
 | `update-ssl [domain]` | Renew/update certificates | `sudo site-manager update-ssl` |
+| `remove-ssl <domain>` | Remove/disable SSL certificates | `sudo site-manager remove-ssl example.com` |
 
 ### Backup & Restore
 | Command | Description | Example |
@@ -121,11 +123,12 @@ When you run `sudo site-manager`, you'll see these options:
 4. **Clone from GitHub** - Clone and configure Git repositories
 5. **Backup Project** - Create comprehensive project backups
 6. **Restore Project** - Restore from backup archives
-7. **Setup SSL** - Configure Let's Encrypt certificates
+7. **Setup SSL** - Configure SSL certificates (auto-detects local vs public domains)
 8. **Configure Existing Project** - Set up domains for existing projects
 9. **Fix Project Permissions** - Advanced permission management
 10. **Update/Renew SSL Certificate** - Manage existing certificates
-11. **Exit** - Close Site Manager
+11. **Remove SSL Certificate** - Disable or completely remove SSL
+12. **Exit** - Close Site Manager
 
 ## Workflow Examples
 
@@ -157,14 +160,37 @@ sudo site-manager
 # Result: Cloned, configured, and dependencies installed
 ```
 
+### Local Development with HTTPS (NEW! 🔥)
+```bash
+# Setup HTTPS for local Laravel development
+sudo site-manager ssl myapp.test
+# Automatically detects .test domain
+# Creates self-signed certificate
+# Configures Nginx with HTTPS redirect
+# Result: https://myapp.test works perfectly!
+
+# Also works with other local domains
+sudo site-manager ssl api.local
+sudo site-manager ssl admin.dev
+sudo site-manager ssl localhost:8080
+```
+
 ### SSL Certificate Management
 ```bash
-# Setup SSL for a domain
-sudo site-manager ssl myapp.test
+# Setup SSL for any domain (smart detection)
+sudo site-manager ssl myapp.test          # Creates self-signed for local
+sudo site-manager ssl myapp.com           # Uses Let's Encrypt for public
 
 # Check all certificate statuses
 sudo site-manager update-ssl
 # Select: 5) Check all certificates status
+
+# Remove SSL completely
+sudo site-manager remove-ssl myapp.test
+# Options:
+# 1) Disable SSL in Nginx only (keep certificate)
+# 2) Remove Let's Encrypt certificate completely
+# 3) Complete SSL removal (both Nginx and certificate)
 ```
 
 ### Advanced Permission Fixes
@@ -217,11 +243,14 @@ sudo site-manager restore /backups/myapp_20241212_143022.tar.gz
 ## Security Features
 
 ### SSL/TLS
-- Automatic Let's Encrypt certificate generation
-- Certificate renewal and monitoring
-- Security header configuration
-- HTTP to HTTPS redirects
-- Multi-domain certificate support
+- **Smart Domain Detection**: Automatically chooses Let's Encrypt vs self-signed
+- **Local Development SSL**: Full HTTPS for .test/.local/.dev domains
+- **Public Domain SSL**: Let's Encrypt certificates for production domains
+- **Certificate renewal and monitoring**
+- **Security header configuration**
+- **HTTP to HTTPS redirects**
+- **Multi-domain certificate support**
+- **Complete SSL removal options**
 
 ### File Permissions
 - User/group ownership management
@@ -235,6 +264,74 @@ sudo site-manager restore /backups/myapp_20241212_143022.tar.gz
 - PHP security configuration
 - MySQL secure installation
 - Proper file ownership chains
+
+## Local Development Features (NEW! 🚀)
+
+### Self-Signed SSL Certificates
+Site Manager now provides **Laravel Valet-style HTTPS** for local development:
+
+#### Automatic Local Domain Detection
+- `.test` domains (e.g., `myapp.test`)
+- `.local` domains (e.g., `api.local`)
+- `.dev` domains (e.g., `admin.dev`)
+- `localhost` variations
+
+#### Features
+- **Full HTTPS functionality** for local development
+- **Automatic HTTP → HTTPS redirects**
+- **10-year certificate validity** (no renewal needed)
+- **Modern TLS 1.2/1.3 protocols**
+- **Strong cipher suites** for security testing
+- **Subject Alternative Names** for wildcard support
+
+#### Perfect for Local Development
+```bash
+# Laravel projects with HTTPS
+sudo site-manager ssl mylaravel.test
+# Result: https://mylaravel.test with full SSL
+
+# API development requiring HTTPS
+sudo site-manager ssl myapi.local
+# Result: Perfect for OAuth callbacks, webhooks
+
+# PWA development (requires HTTPS)
+sudo site-manager ssl mypwa.test
+# Result: Service workers and HTTPS features work locally
+```
+
+#### Browser Trust (Optional)
+```bash
+# Make browsers trust the certificate system-wide
+sudo cp /etc/ssl/site-manager/myapp.test.crt /usr/local/share/ca-certificates/
+sudo update-ca-certificates
+
+# Or accept the browser warning once (recommended for dev)
+# Chrome/Edge: Click "Advanced" → "Proceed to myapp.test (unsafe)"
+# Firefox: Click "Advanced" → "Accept the Risk and Continue"
+```
+
+## What's New in v2.1.0 🎉
+
+### SSL Enhancements
+- **Self-Signed SSL**: Laravel Valet-style HTTPS for local development
+- **Smart Detection**: Automatically detects local vs public domains
+- **Universal SSL**: Works with .test, .local, .dev, and localhost domains
+- **Modern Security**: TLS 1.2/1.3 with strong cipher suites
+- **SSL Removal**: Complete SSL certificate removal options
+- **Certificate Monitoring**: Enhanced certificate status checking
+
+### Developer Experience
+- **Instant Local HTTPS**: No more "mixed content" errors in development
+- **Automatic Redirects**: HTTP automatically redirects to HTTPS
+- **PWA Development**: Service workers work with local HTTPS
+- **OAuth Testing**: Secure callbacks work in local development
+- **API Development**: HTTPS APIs work perfectly locally
+
+### Security & Reliability
+- **Enhanced Security Headers**: HSTS, CSP, and modern security headers
+- **Better Error Handling**: Improved SSL setup error messages
+- **Certificate Management**: Full lifecycle SSL certificate management
+- **Health Monitoring**: Comprehensive certificate health checks
 
 ## Troubleshooting
 
@@ -250,14 +347,39 @@ sudo site-manager fix-permissions
 # Select: 2) Full Reset
 ```
 
+**Local HTTPS Not Working**
+```bash
+# Create self-signed certificate for local domain
+sudo site-manager ssl myapp.test
+# Browser will show security warning - this is normal for self-signed certificates
+# Click "Advanced" → "Proceed to myapp.test (unsafe)" to continue
+
+# For system-wide trust (optional)
+sudo cp /etc/ssl/site-manager/myapp.test.crt /usr/local/share/ca-certificates/
+sudo update-ca-certificates
+```
+
 **SSL Certificate Issues**
 ```bash
 # Check certificate status
 sudo site-manager update-ssl
 # Select: 5) Check all certificates status
 
-# Force renewal if needed
+# For public domains - force renewal if needed
 # Select: 2) Force certificate renewal
+
+# For local domains - recreate self-signed certificate
+sudo site-manager remove-ssl myapp.test
+sudo site-manager ssl myapp.test
+```
+
+**Mixed Content Warnings with Local HTTPS**
+```bash
+# Ensure your application uses HTTPS URLs
+# For Laravel, check APP_URL in .env:
+# APP_URL=https://myapp.test
+
+# For WordPress, update site URL in database or wp-config.php
 ```
 
 **Database Connection Issues**
@@ -283,11 +405,16 @@ sudo systemctl reload nginx
 - Let's Encrypt logs: `/var/log/letsencrypt/`
 - Site Manager config: `/etc/site-manager/`
 
+### Certificate Locations
+- **Let's Encrypt certificates**: `/etc/letsencrypt/live/{domain}/`
+- **Self-signed certificates**: `/etc/ssl/site-manager/{domain}.crt`
+- **Private keys**: `/etc/ssl/site-manager/{domain}.key`
+- **Certificate configs**: `/etc/ssl/site-manager/{domain}.conf`
+
 ## Support
 
 - **Issues**: [GitHub Issues](https://github.com/williamug/site-manager/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/williamug/site-manager/discussions)
-- **Documentation**: This README and inline help
 
 ## Contributing
 
@@ -300,10 +427,6 @@ We welcome contributions! Please:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
-## 📄 License
+## License
 
 MIT Licensed. See [LICENSE](LICENSE) for details.
-
----
-
-**Site Manager v2.0** - Making web development server management simple and powerful!
