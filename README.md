@@ -2,16 +2,18 @@
 
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
-![Version](https://img.shields.io/badge/version-2.0-blue)
+![Version](https://img.shields.io/badge/version-2.1-blue)
 ![Downloads](https://img.shields.io/github/downloads/williamug/site-manager/total?style=flat-square&logo=github)
 ![Stars](https://img.shields.io/github/stars/williamug/site-manager?style=flat-square&logo=github)
 
-A comprehensive solution for server administration and web project management with advanced SSL, backup, and permission management features.
+A comprehensive solution for server administration and web project management with advanced SSL, backup, permission management, and firewall configuration features.
 
 ## Features
 
 ### Server Management
 - **Automated Setup**: Install & configure Nginx, PHP (8.1-8.4), MySQL, Composer, Node.js and NPM
+- **Firewall Configuration**: Automatic UFW firewall setup with web server rules (HTTP/HTTPS/SSH)
+- **Memory Optimization**: Smart memory management and swap handling for low-memory servers
 - **Dependency Verification**: Check system requirements and component versions
 - **Permission Management**: Advanced file permission fixing with Laravel-specific support
 - **User Management**: Automatic www-data group configuration
@@ -106,6 +108,7 @@ sudo site-manager
 | `ssl <domain>` | Setup SSL (auto-detects local vs public) | `sudo site-manager ssl example.test` |
 | `update-ssl [domain]` | Renew/update certificates | `sudo site-manager update-ssl` |
 | `remove-ssl <domain>` | Remove/disable SSL certificates | `sudo site-manager remove-ssl example.com` |
+| `check-ssl [domain]` | Check SSL status and health | `sudo site-manager check-ssl example.com` |
 
 ### Backup & Restore
 | Command | Description | Example |
@@ -128,7 +131,8 @@ When you run `sudo site-manager`, you'll see these options:
 9. **Fix Project Permissions** - Advanced permission management
 10. **Update/Renew SSL Certificate** - Manage existing certificates
 11. **Remove SSL Certificate** - Disable or completely remove SSL
-12. **Exit** - Close Site Manager
+12. **Check SSL Status** - Comprehensive SSL health diagnostics (NEW!)
+13. **Exit** - Close Site Manager
 
 ## Workflow Examples
 
