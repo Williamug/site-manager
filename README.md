@@ -6,7 +6,7 @@
 ![Downloads](https://img.shields.io/github/downloads/williamug/site-manager/total?style=flat-square&logo=github)
 ![Stars](https://img.shields.io/github/stars/williamug/site-manager?style=flat-square&logo=github)
 
-A comprehensive solution for server administration and web project management with advanced SSL, backup, and permission management features. **Now with Laravel Valet-style self-signed certificates for local development!**
+A comprehensive solution for server administration and web project management with advanced SSL, backup, and permission management features.
 
 ## Features
 
