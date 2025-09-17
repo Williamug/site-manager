@@ -443,6 +443,78 @@ setup_server() {
         echo -e "${GREEN}✅ Nginx is already installed${NC}"
     fi
 
+    # Configure UFW Firewall for web server
+    echo -e "\n${YELLOW}Configuring UFW Firewall...${NC}"
+
+    # Check if UFW is installed
+    if ! command -v ufw &>/dev/null; then
+        echo -e "${YELLOW}Installing UFW firewall...${NC}"
+        if sudo apt-get install -y ufw; then
+            echo -e "${GREEN}✅ UFW installed successfully${NC}"
+        else
+            echo -e "${RED}❌ Failed to install UFW${NC}"
+            echo -e "${YELLOW}⚠️  Continuing without firewall configuration${NC}"
+        fi
+    else
+        echo -e "${GREEN}✅ UFW is already installed${NC}"
+    fi
+
+    # Configure firewall rules if UFW is available
+    if command -v ufw &>/dev/null; then
+        echo -e "${BLUE}Setting up firewall rules for web server...${NC}"
+
+        # Allow SSH (port 22) - important to not lock yourself out
+        sudo ufw allow ssh
+        echo -e "${GREEN}✅ Allowed SSH (port 22)${NC}"
+
+        # Allow HTTP (port 80) for web traffic
+        sudo ufw allow http
+        echo -e "${GREEN}✅ Allowed HTTP (port 80)${NC}"
+
+        # Allow HTTPS (port 443) for SSL/TLS traffic
+        sudo ufw allow https
+        echo -e "${GREEN}✅ Allowed HTTPS (port 443)${NC}"
+
+        # Check current UFW status
+        echo -e "\n${YELLOW}Current UFW status:${NC}"
+        sudo ufw status
+
+        # Enable UFW if it's not already active
+        if sudo ufw status | grep -q "Status: inactive"; then
+            echo -e "\n${YELLOW}Enabling UFW firewall...${NC}"
+            echo -e "${BLUE}This will activate the firewall with the configured rules${NC}"
+
+            read -p "Enable UFW firewall now? [Y/n] " enable_ufw
+            if [[ ! "$enable_ufw" =~ ^[Nn]$ ]]; then
+                # Enable UFW
+                sudo ufw --force enable
+                echo -e "${GREEN}✅ UFW firewall is now active and enabled on system startup${NC}"
+
+                # Show final status
+                echo -e "\n${BLUE}Final UFW status:${NC}"
+                sudo ufw status verbose
+            else
+                echo -e "${YELLOW}⚠️  UFW rules configured but firewall remains inactive${NC}"
+                echo -e "${BLUE}You can enable it later with: sudo ufw enable${NC}"
+            fi
+        else
+            echo -e "${GREEN}✅ UFW firewall is already active${NC}"
+            echo -e "\n${BLUE}Updated UFW status:${NC}"
+            sudo ufw status verbose
+        fi
+
+        echo -e "\n${BLUE}💡 Firewall Configuration Summary:${NC}"
+        echo -e "  • SSH (port 22): ${GREEN}Allowed${NC} - Remote access"
+        echo -e "  • HTTP (port 80): ${GREEN}Allowed${NC} - Web traffic"
+        echo -e "  • HTTPS (port 443): ${GREEN}Allowed${NC} - Secure web traffic"
+        echo -e "\n${YELLOW}💡 UFW Management Commands:${NC}"
+        echo -e "  • Check status: sudo ufw status"
+        echo -e "  • Enable firewall: sudo ufw enable"
+        echo -e "  • Disable firewall: sudo ufw disable"
+        echo -e "  • Add custom rule: sudo ufw allow [port/service]"
+        echo -e "  • Remove rule: sudo ufw delete allow [port/service]"
+    fi
+
     # PHP
     echo -e "\n${YELLOW}Installing PHP $php_version and extensions...${NC}"
     if sudo apt-get install -y \
@@ -2448,7 +2520,10 @@ remove_ssl() {
     echo -e "${BLUE}Choose the SSL removal option:${NC}"
     echo ""
 
+    local option_count=0
+
     if [ "$has_ssl_nginx" = true ]; then
+        option_count=$((option_count + 1))
         echo -e "${GREEN}1) Disable SSL in Nginx only${NC} (keep certificate for future use)"
         echo -e "   ${BLUE}What it does:${NC}"
         echo -e "   • Removes HTTPS (port 443) from Nginx configuration"
@@ -2459,8 +2534,14 @@ remove_ssl() {
         echo ""
     fi
 
+    # Always show option 2 if Let's Encrypt certificate exists
     if [ "$has_letsencrypt" = true ]; then
-        echo -e "${GREEN}2) Remove Let's Encrypt certificate completely${NC} (permanent removal)"
+        option_count=$((option_count + 1))
+        local option_num=2
+        if [ "$has_ssl_nginx" = false ]; then
+            option_num=1
+        fi
+        echo -e "${GREEN}${option_num}) Remove Let's Encrypt certificate completely${NC} (permanent removal)"
         echo -e "   ${BLUE}What it does:${NC}"
         echo -e "   • Removes SSL from Nginx configuration"
         echo -e "   • Deletes Let's Encrypt certificate files permanently"
@@ -2470,7 +2551,9 @@ remove_ssl() {
         echo ""
     fi
 
+    # Always show option 3 if both SSL nginx and Let's Encrypt exist
     if [ "$has_ssl_nginx" = true ] && [ "$has_letsencrypt" = true ]; then
+        option_count=$((option_count + 1))
         echo -e "${GREEN}3) Complete SSL removal${NC} (both Nginx and certificate)"
         echo -e "   ${BLUE}What it does:${NC}"
         echo -e "   • Everything from options 1 and 2 combined"
@@ -2480,51 +2563,59 @@ remove_ssl() {
         echo ""
     fi
 
-    echo -e "${GREEN}4) Cancel${NC} (no changes)"
+    local cancel_option=$((option_count + 1))
+    echo -e "${GREEN}${cancel_option}) Cancel${NC} (no changes)"
 
-    read -p "Select option [1-4]: " removal_choice
+    read -p "Select option [1-${cancel_option}]: " removal_choice
 
     case $removal_choice in
         1)
-            if [ "$has_ssl_nginx" = false ]; then
-                echo -e "${RED}❌ No SSL configuration found in Nginx${NC}"
-                return 1
-            fi
-            echo -e "\n${YELLOW}Disabling SSL in Nginx configuration...${NC}"
-            disable_ssl_nginx "$domain"
-            ;;
-        2)
-            if [ "$has_letsencrypt" = false ]; then
-                echo -e "${RED}❌ No Let's Encrypt certificate found${NC}"
-                return 1
-            fi
-            echo -e "\n${YELLOW}Removing Let's Encrypt certificate...${NC}"
-            remove_letsencrypt_certificate "$domain"
-            ;;
-        3)
-            if [ "$has_ssl_nginx" = false ] && [ "$has_letsencrypt" = false ]; then
+            if [ "$has_ssl_nginx" = true ]; then
+                echo -e "\n${YELLOW}Disabling SSL in Nginx configuration...${NC}"
+                disable_ssl_nginx "$domain"
+            elif [ "$has_letsencrypt" = true ]; then
+                echo -e "\n${YELLOW}Removing Let's Encrypt certificate...${NC}"
+                remove_letsencrypt_certificate "$domain"
+            else
                 echo -e "${RED}❌ No SSL configuration found${NC}"
                 return 1
             fi
-            echo -e "\n${YELLOW}Performing complete SSL removal...${NC}"
-
-            # Remove SSL from nginx first
-            if [ "$has_ssl_nginx" = true ]; then
-                disable_ssl_nginx "$domain"
-            fi
-
-            # Then remove Let's Encrypt certificate
-            if [ "$has_letsencrypt" = true ]; then
+            ;;
+        2)
+            if [ "$has_ssl_nginx" = true ] && [ "$has_letsencrypt" = true ]; then
+                echo -e "\n${YELLOW}Removing Let's Encrypt certificate...${NC}"
                 remove_letsencrypt_certificate "$domain"
+            elif [ "$has_ssl_nginx" = true ] && [ "$has_letsencrypt" = false ]; then
+                echo -e "\n${YELLOW}Performing complete SSL removal...${NC}"
+                disable_ssl_nginx "$domain"
+            elif [ "$has_ssl_nginx" = false ] && [ "$has_letsencrypt" = true ]; then
+                echo "Operation cancelled."
+                return 0
+            else
+                echo -e "${RED}❌ Invalid option${NC}"
+                return 1
             fi
             ;;
-        4)
-            echo "Operation cancelled."
-            return 0
+        3)
+            if [ "$has_ssl_nginx" = true ] && [ "$has_letsencrypt" = true ]; then
+                echo -e "\n${YELLOW}Performing complete SSL removal...${NC}"
+                # Remove SSL from nginx first
+                disable_ssl_nginx "$domain"
+                # Then remove Let's Encrypt certificate
+                remove_letsencrypt_certificate "$domain"
+            else
+                echo "Operation cancelled."
+                return 0
+            fi
             ;;
         *)
-            echo -e "${RED}❌ Invalid option${NC}"
-            return 1
+            if [ "$removal_choice" = "$cancel_option" ]; then
+                echo "Operation cancelled."
+                return 0
+            else
+                echo -e "${RED}❌ Invalid option${NC}"
+                return 1
+            fi
             ;;
     esac
 
