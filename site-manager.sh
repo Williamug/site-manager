@@ -3862,14 +3862,15 @@ check_ssl_status() {
             return 1
         fi
 
-        echo -e "\n${YELLOW}Select a domain or enter domain name:${NC}"
-        read -p "Enter domain number (1-$((count-1))) or domain name: " selection
+        echo -e "\n${YELLOW}Select a domain:${NC}"
+        read -p "Enter domain number (1-$((count-1))): " selection
 
         # Check if selection is a number
         if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -lt "$count" ]; then
             domain="${domains[$selection]}"
         else
-            domain="$selection"
+            echo -e "${RED}❌ Invalid selection. Please enter a number between 1 and $((count-1))${NC}"
+            return 1
         fi
     fi
 
