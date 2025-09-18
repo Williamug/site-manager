@@ -1721,7 +1721,7 @@ move_project() {
     # Get domain name with validation
     while true; do
         read -p "Enter domain name: " domain
-        if [ -z "$domain" ] || [ "$domain" = "exit" ]; then
+        if ( [ -z "$domain" ] || [ "$domain" = "exit" ] ); then
             echo -e "${RED}Error: Please enter a valid domain name (not empty or 'exit')${NC}"
             continue
         fi
@@ -2410,43 +2410,43 @@ setup_ssl() {
 
     echo -e "${YELLOW}Setting up SSL Certificate${NC}"
 
-    # Validate domain parameter
+    # Get domain if not provided - show list of available domains
     if [ -z "$domain" ]; then
-        echo -e "${RED}❌ Domain name is required${NC}"
-        return 1
-    fi
+        echo -e "\n${BLUE}Available domains:${NC}"
 
-    # Check if nginx config exists for this domain
-    local nginx_config="/etc/nginx/sites-available/$domain"
-    if [ ! -f "$nginx_config" ]; then
-        echo -e "${RED}❌ Nginx configuration not found for domain: $domain${NC}"
-        echo -e "${YELLOW}💡 Please create the site first using site-manager${NC}"
-        return 1
-    fi
+        # Collect all domains from nginx configs
+        local count=1
+        local domains=()
+        local has_domains=false
 
-    # Check if nginx config is enabled
-    if [ ! -L "/etc/nginx/sites-enabled/$domain" ]; then
-        echo -e "${YELLOW}⚠️  Nginx site is not enabled. Enabling now...${NC}"
-        sudo ln -sf "$nginx_config" "/etc/nginx/sites-enabled/$domain"
-        sudo nginx -t && sudo systemctl reload nginx
-    fi
+        if [ -d "/etc/nginx/sites-available" ]; then
+            for config_file in /etc/nginx/sites-available/*; do
+                if [ -f "$config_file" ] && [ "$(basename "$config_file")" != "default" ]; then
+                    local domain_name=$(basename "$config_file")
+                    domains[count]="$domain_name"
 
-    # Detect if this is a local development domain
-    local is_local_domain=false
-    if [[ "$domain" =~ \.(test|local|dev)$ ]] || [[ "$domain" =~ ^localhost ]]; then
-        is_local_domain=true
-    fi
+                    # Check SSL status for display
+                    local ssl_status="HTTP only"
+                    local ssl_color="${YELLOW}"
 
-    if [ "$is_local_domain" = true ]; then
-        echo -e "\n${BLUE}🔍 Local development domain detected: $domain${NC}"
-        echo -e "${YELLOW}Since this is a local domain (.test/.local/.dev), Let's Encrypt cannot issue certificates.${NC}"
-        echo -e "${GREEN}I'll create a self-signed certificate for local HTTPS development.${NC}"
-        echo ""
-        echo -e "${BLUE}Self-signed certificates provide:${NC}"
-        echo "  ✅ Full HTTPS functionality for local development"
-        echo "  ✅ Same behavior as Laravel Valet"
-        echo "  ✅ Testing SSL/TLS features locally"
-        echo "  ⚠️  Browser security warning (can be ignored for local dev)"
+                    # Check if SSL is already configured
+                    if grep -q "listen 443" "$config_file" || grep -q "ssl_certificate" "$config_file"; then
+                        ssl_status="HTTPS enabled"
+                        ssl_color="${GREEN}"
+                    fi
+
+                    echo -e "  $count) $domain_name ${ssl_color}($ssl_status)${NC}"
+                    ((count++))
+                    has_domains=true
+                fi
+            done
+        fi
+
+        if [ "$has_domains" = false ]; then
+            echo -e "${RED}❌ No domains found${NC}"
+            echo -e "${YELLOW}💡 Create a site first using: sudo site-manager${NC}"
+            return 1
+        fi
         echo ""
 
         read -p "Create self-signed SSL certificate for $domain? [Y/n] " create_selfsigned
