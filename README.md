@@ -2,7 +2,7 @@
 
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
-![Version](https://img.shields.io/badge/version-2.1-blue)
+![Version](https://img.shields.io/github/v/release/williamug/site-manager?style=flat-square&logo=github)
 ![Downloads](https://img.shields.io/github/downloads/williamug/site-manager/total?style=flat-square&logo=github)
 ![Stars](https://img.shields.io/github/stars/williamug/site-manager?style=flat-square&logo=github)
 
