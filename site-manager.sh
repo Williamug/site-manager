@@ -2778,10 +2778,13 @@ update_ssl() {
     # Get domain if not provided
     if [ -z "$domain" ]; then
         echo -e "\n${BLUE}Available domains with SSL certificates:${NC}"
-        if [ -d "/etc/letsencrypt/live" ]; then
-            local count=1
-            local domains=()
 
+        local count=1
+        local domains=()
+        local has_ssl_domains=false
+
+        # Check Let's Encrypt certificates
+        if [ -d "/etc/letsencrypt/live" ]; then
             for cert_dir in /etc/letsencrypt/live/*; do
                 if [ -d "$cert_dir" ] && [ "$(basename "$cert_dir")" != "README" ]; then
                     local domain_name=$(basename "$cert_dir")
@@ -2794,36 +2797,103 @@ update_ssl() {
                         local days_left=$(( ($(date -d "$expiry_date" +%s) - $(date +%s)) / 86400 ))
 
                         if [ $days_left -lt 30 ]; then
-                            echo "  $count) $domain_name ${RED}(expires in $days_left days)${NC}"
+                            echo "  $count) $domain_name ${RED}(Let's Encrypt - expires in $days_left days)${NC}"
                         elif [ $days_left -lt 60 ]; then
-                            echo "  $count) $domain_name ${YELLOW}(expires in $days_left days)${NC}"
+                            echo "  $count) $domain_name ${YELLOW}(Let's Encrypt - expires in $days_left days)${NC}"
                         else
-                            echo "  $count) $domain_name ${GREEN}(expires in $days_left days)${NC}"
+                            echo "  $count) $domain_name ${GREEN}(Let's Encrypt - expires in $days_left days)${NC}"
                         fi
                     else
-                        echo "  $count) $domain_name (unable to check expiry)"
+                        echo "  $count) $domain_name ${YELLOW}(Let's Encrypt - unable to check expiry)${NC}"
                     fi
                     ((count++))
+                    has_ssl_domains=true
                 fi
             done
-
-            if [ ${#domains[@]} -eq 0 ]; then
-                echo -e "${RED}❌ No SSL certificates found${NC}"
-                return 1
-            fi
-
-            echo -e "\n${YELLOW}Select a domain or enter domain name:${NC}"
-            read -p "Enter domain number (1-$((count-1))) or domain name: " selection
-
-            # Check if selection is a number
-            if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -lt "$count" ]; then
-                domain="${domains[$selection]}"
-            else
-                domain="$selection"
-            fi
-        else
-            read -p "Enter domain name: " domain
         fi
+
+        # Check self-signed certificates
+        if [ -d "/etc/ssl/site-manager" ]; then
+            for cert_file in /etc/ssl/site-manager/*.crt; do
+                if [ -f "$cert_file" ]; then
+                    local domain_name=$(basename "$cert_file" .crt)
+
+                    # Check if this domain is already listed (Let's Encrypt takes precedence)
+                    local already_listed=false
+                    for i in "${!domains[@]}"; do
+                        if [ "${domains[$i]}" = "$domain_name" ]; then
+                            already_listed=true
+                            break
+                        fi
+                    done
+
+                    # If not already listed, add it
+                    if [ "$already_listed" = false ]; then
+                        domains[count]="$domain_name"
+
+                        local expiry_date=$(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2)
+                        local days_left=$(( ($(date -d "$expiry_date" +%s) - $(date +%s)) / 86400 ))
+
+                        if [ $days_left -lt 0 ]; then
+                            echo "  $count) $domain_name ${RED}(Self-signed - EXPIRED)${NC}"
+                        elif [ $days_left -lt 365 ]; then
+                            echo "  $count) $domain_name ${YELLOW}(Self-signed - expires in $days_left days)${NC}"
+                        else
+                            echo "  $count) $domain_name ${GREEN}(Self-signed - expires in $days_left days)${NC}"
+                        fi
+                        ((count++))
+                        has_ssl_domains=true
+                    fi
+                fi
+            done
+        fi
+
+        # Check Nginx configurations for SSL-enabled domains without certificates
+        if [ -d "/etc/nginx/sites-available" ]; then
+            for config_file in /etc/nginx/sites-available/*; do
+                if [ -f "$config_file" ] && [ "$(basename "$config_file")" != "default" ]; then
+                    local domain_name=$(basename "$config_file")
+
+                    # Check if this domain has SSL configured in nginx but no certificate found yet
+                    if grep -q "listen 443" "$config_file" || grep -q "ssl_certificate" "$config_file"; then
+                        # Check if this domain is already listed
+                        local already_listed=false
+                        for i in "${!domains[@]}"; do
+                            if [ "${domains[$i]}" = "$domain_name" ]; then
+                                already_listed=true
+                                break
+                            fi
+                        done
+
+                        # If not already listed, add it with a warning
+                        if [ "$already_listed" = false ]; then
+                            domains[count]="$domain_name"
+                            echo "  $count) $domain_name ${YELLOW}(SSL configured but certificate missing)${NC}"
+                            ((count++))
+                            has_ssl_domains=true
+                        fi
+                    fi
+                fi
+            done
+        fi
+
+        if [ "$has_ssl_domains" = false ]; then
+            echo -e "${RED}❌ No SSL certificates found${NC}"
+            echo -e "${YELLOW}💡 To set up SSL for a domain, use: sudo site-manager ssl <domain>${NC}"
+            return 1
+        fi
+
+        echo -e "\n${YELLOW}Select a domain or enter domain name:${NC}"
+        read -p "Enter domain number (1-$((count-1))) or domain name: " selection
+
+        # Check if selection is a number
+        if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -lt "$count" ]; then
+            domain="${domains[$selection]}"
+        else
+            domain="$selection"
+        fi
+    else
+        read -p "Enter domain name: " domain
     fi
 
     # Validate domain
@@ -3143,10 +3213,10 @@ remove_ssl() {
                             local days_left=$(( ($(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2 | xargs -I {} date -d "{}" +%s) - $(date +%s)) / 86400 ))
 
                             if [ $days_left -lt 0 ]; then
-                                ssl_type="Self-signed - ${RED}EXPIRED${ssl_color}"
+                                ssl_status="Self-signed - ${RED}EXPIRED${GREEN}"
                                 ssl_color="${RED}"
                             else
-                                ssl_type="Self-signed - Valid for $days_left days"
+                                ssl_status="Self-signed - Valid for $days_left days"
                             fi
                         # SSL configured but certificate file missing
                         else
