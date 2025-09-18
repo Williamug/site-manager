@@ -232,7 +232,7 @@ EOF
 
             # Prompt for MySQL root password
             echo -e "\n${YELLOW}Setting up MySQL security...${NC}"
-            read -s -p "Enter a password for MySQL root user: " db_root_pass
+            read -s -p "Enter a password for MySQL root user (or press Enter to skip): " db_root_pass
             echo ""
 
             if [ -n "$db_root_pass" ]; then
@@ -267,82 +267,591 @@ EOF
     return 0
 }
 
-# Enhanced Node.js installation with multiple fallback methods
-install_nodejs() {
-    echo -e "\n${YELLOW}Installing Node.js and npm...${NC}"
+# Enhanced MariaDB installation with memory optimization
+install_mariadb() {
+    echo -e "\n${YELLOW}Installing MariaDB with memory optimization...${NC}"
 
-    if command -v node &>/dev/null; then
-        echo -e "${GREEN}✅ Node.js is already installed${NC}"
+    # Check if MariaDB/MySQL is already installed
+    if command -v mysqld &>/dev/null || command -v mariadbd &>/dev/null; then
+        echo -e "${GREEN}✅ MariaDB/MySQL is already installed${NC}"
         return 0
     fi
 
-    # Method 1: NodeSource repository (preferred)
-    echo -e "${BLUE}Trying NodeSource repository installation...${NC}"
-    if curl -fsSL https://deb.nodesource.com/setup_20.x 2>/dev/null | sudo -E bash - && sudo apt-get install -y nodejs 2>/dev/null; then
-        echo -e "${GREEN}✅ Node.js installed via NodeSource repository${NC}"
-        return 0
-    fi
+    # Pre-configure MariaDB to reduce memory usage during installation
+    echo -e "${BLUE}Configuring MariaDB for low-memory installation...${NC}"
 
-    echo -e "${YELLOW}NodeSource installation failed, trying alternative methods...${NC}"
+    # Create temporary MariaDB config for installation
+    sudo mkdir -p /etc/mysql/conf.d
+    cat << EOF | sudo tee /etc/mysql/conf.d/low-memory.cnf > /dev/null
+[mysqld]
+innodb_buffer_pool_size = 64M
+innodb_log_file_size = 32M
+innodb_log_buffer_size = 4M
+table_open_cache = 64
+sort_buffer_size = 512K
+net_buffer_length = 16K
+read_buffer_size = 256K
+read_rnd_buffer_size = 512K
+myisam_sort_buffer_size = 8M
+thread_stack = 256K
+tmp_table_size = 32M
+max_heap_table_size = 32M
+key_buffer_size = 16M
+max_allowed_packet = 16M
+thread_cache_size = 8
+query_cache_limit = 1M
+query_cache_size = 16M
+EOF
 
-    # Method 2: Ubuntu package manager
-    echo -e "${BLUE}Trying Ubuntu package manager...${NC}"
-    if sudo apt-get install -y nodejs npm 2>/dev/null; then
-        echo -e "${GREEN}✅ Node.js installed via package manager${NC}"
+    # Set DEBIAN_FRONTEND to avoid interactive prompts
+    export DEBIAN_FRONTEND=noninteractive
 
-        # Check if we got a reasonable version
-        local node_version=$(node -v 2>/dev/null | sed 's/v//')
-        local major_version=$(echo "$node_version" | cut -d. -f1)
+    # Try installing MariaDB with retries
+    local mariadb_installed=false
+    local attempts=0
+    local max_attempts=3
 
-        if [ -n "$major_version" ] && [ "$major_version" -ge 14 ]; then
-            echo -e "${GREEN}✅ Node.js version $node_version is suitable${NC}"
+    while [ $attempts -lt $max_attempts ] && [ "$mariadb_installed" = false ]; do
+        attempts=$((attempts + 1))
+        echo -e "${YELLOW}MariaDB installation attempt $attempts/$max_attempts...${NC}"
+
+        # Clear any previous failed installations
+        if [ $attempts -gt 1 ]; then
+            echo "Cleaning up previous installation attempt..."
+            sudo apt-get purge -y mariadb* mysql* >/dev/null 2>&1 || true
+            sudo apt-get autoremove -y >/dev/null 2>&1 || true
+            sudo rm -rf /var/lib/mysql >/dev/null 2>&1 || true
+
+            # Wait and clear caches between attempts
+            sleep 10
+            sudo sync
+            echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null 2>&1 || true
+        fi
+
+        # Install with memory-conscious approach
+        echo "Installing MariaDB server..."
+        if sudo apt-get install -y mariadb-server mariadb-client 2>/dev/null; then
+            mariadb_installed=true
+            echo -e "${GREEN}✅ MariaDB installed successfully${NC}"
+        else
+            echo -e "${RED}❌ MariaDB installation attempt $attempts failed${NC}"
+
+            if [ $attempts -lt $max_attempts ]; then
+                echo -e "${YELLOW}Waiting 30 seconds before retry...${NC}"
+                sleep 30
+            fi
+        fi
+    done
+
+    if [ "$mariadb_installed" = false ]; then
+        echo -e "${RED}❌ Failed to install MariaDB after $max_attempts attempts${NC}"
+        echo -e "\n${YELLOW}💡 Alternative options:${NC}"
+        echo "   1. Try installing MySQL instead"
+        echo "   2. Skip database installation for now"
+        echo "   3. Increase server memory or add permanent swap"
+        echo "   4. Use SQLite for Laravel projects (no database server needed)"
+
+        read -p "Continue without MariaDB? [y/N] " skip_mariadb
+        if [[ "$skip_mariadb" =~ ^[Yy]$ ]]; then
+            echo -e "${YELLOW}⚠️  Skipping MariaDB installation${NC}"
+            # Clean up temporary config
+            sudo rm -f /etc/mysql/conf.d/low-memory.cnf
             return 0
         else
-            echo -e "${YELLOW}⚠️  Node.js version $node_version might be too old${NC}"
+            return 1
         fi
     fi
 
-    # Method 3: Snap package (if available)
-    if command -v snap &>/dev/null; then
-        echo -e "${BLUE}Trying Snap package...${NC}"
-        if sudo snap install node --classic 2>/dev/null; then
-            echo -e "${GREEN}✅ Node.js installed via Snap${NC}"
+    # Start and enable MariaDB
+    echo "Starting MariaDB service..."
+    local service_name="mariadb"
+
+    # Check which service name is available (mariadb or mysql)
+    if ! systemctl list-unit-files | grep -q "mariadb.service"; then
+        if systemctl list-unit-files | grep -q "mysql.service"; then
+            service_name="mysql"
+        fi
+    fi
+
+    if sudo systemctl enable "$service_name" && sudo systemctl start "$service_name"; then
+        echo -e "${GREEN}✅ MariaDB service started successfully${NC}"
+
+        # Wait for MariaDB to be ready
+        echo "Waiting for MariaDB to be ready..."
+        local wait_count=0
+        while ! sudo mysqladmin ping >/dev/null 2>&1 && [ $wait_count -lt 30 ]; do
+            sleep 2
+            wait_count=$((wait_count + 1))
+            echo -n "."
+        done
+        echo ""
+
+        if sudo mysqladmin ping >/dev/null 2>&1; then
+            echo -e "${GREEN}✅ MariaDB is ready${NC}"
+
+            # Prompt for MariaDB root password
+            echo -e "\n${YELLOW}Setting up MariaDB security...${NC}"
+            read -s -p "Enter a password for MariaDB root user (or press Enter to skip): " db_root_pass
+            echo ""
+
+            if [ -n "$db_root_pass" ]; then
+                # Set MariaDB root password
+                if sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$db_root_pass'; FLUSH PRIVILEGES;" 2>/dev/null; then
+                    echo -e "${GREEN}✅ MariaDB root password set successfully${NC}"
+
+                    read -p "Run MariaDB secure installation? [Y/n] " run_secure
+                    if [[ ! "$run_secure" =~ ^[Nn]$ ]]; then
+                        echo -e "${YELLOW}Running MariaDB secure installation...${NC}"
+                        sudo mysql_secure_installation
+                    fi
+                else
+                    echo -e "${YELLOW}⚠️  Could not set MariaDB root password automatically${NC}"
+                    echo -e "${BLUE}You can set it manually later with: sudo mysql_secure_installation${NC}"
+                fi
+            else
+                echo -e "${YELLOW}No password set for MariaDB root user${NC}"
+                echo -e "${BLUE}You can set it later with: sudo mysql_secure_installation${NC}"
+            fi
+        else
+            echo -e "${YELLOW}⚠️  MariaDB started but not responding to ping${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠️  MariaDB installed but failed to start automatically${NC}"
+        echo -e "${BLUE}You can start it manually later with: sudo systemctl start $service_name${NC}"
+    fi
+
+    # Clean up temporary config
+    sudo rm -f /etc/mysql/conf.d/low-memory.cnf
+
+    # Display MariaDB version and useful information
+    echo -e "\n${BLUE}💡 MariaDB Information:${NC}"
+    local mariadb_version=$(mysqld --version 2>/dev/null | grep -oP 'Ver \K[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+    echo -e "  • Version: $mariadb_version"
+    echo -e "  • Service: $service_name"
+    echo -e "  • Configuration: /etc/mysql/"
+    echo -e "  • Data Directory: /var/lib/mysql/"
+    echo -e "  • Default Port: 3306"
+
+    echo -e "\n${GREEN}✅ MariaDB advantages over MySQL:${NC}"
+    echo -e "  • Better performance on small servers"
+    echo -e "  • Lower memory usage"
+    echo -e "  • Faster query processing"
+    echo -e "  • Drop-in replacement for MySQL"
+    echo -e "  • Same commands and compatibility"
+
+    return 0
+}
+
+# Database selection and installation
+install_database() {
+    echo -e "\n${YELLOW}Database Selection${NC}"
+    echo -e "${BLUE}Choose your database server:${NC}"
+    echo ""
+
+    # Check if any database is already installed
+    local has_mysql=false
+    local has_mariadb=false
+
+    if command -v mysqld &>/dev/null; then
+        # Check if it's MySQL or MariaDB
+        local db_version=$(mysqld --version 2>/dev/null)
+        if echo "$db_version" | grep -qi "mariadb"; then
+            has_mariadb=true
+            echo -e "${GREEN}✅ MariaDB is already installed${NC}"
+        else
+            has_mysql=true
+            echo -e "${GREEN}✅ MySQL is already installed${NC}"
+        fi
+
+        echo -e "${BLUE}Current installation: $(mysqld --version 2>/dev/null)${NC}"
+        read -p "Skip database installation? [Y/n] " skip_db
+        if [[ ! "$skip_db" =~ ^[Nn]$ ]]; then
+            echo -e "${GREEN}✅ Using existing database installation${NC}"
             return 0
         fi
     fi
 
-    # Method 4: Manual installation
-    echo -e "${BLUE}Attempting manual installation...${NC}"
-    local node_url="https://nodejs.org/dist/v20.9.0/node-v20.9.0-linux-x64.tar.xz"
-    local install_dir="/opt/nodejs"
+    echo -e "${GREEN}1) MariaDB${NC} ${YELLOW}(Recommended)${NC} - Better performance & memory usage"
+    echo -e "   ${BLUE}What you get:${NC}"
+    echo -e "   • Optimized for smaller servers and VPS"
+    echo -e "   • Lower memory footprint (important for DigitalOcean droplets)"
+    echo -e "   • Faster query processing and better caching"
+    echo -e "   • 100% compatible with MySQL (same commands, same syntax)"
+    echo -e "   • Used by major platforms: Wikipedia, Google, Facebook"
+    echo -e "   • Better for WordPress, Laravel, and most PHP applications"
+    echo ""
 
-    if curl -fsSL "$node_url" -o /tmp/nodejs.tar.xz 2>/dev/null; then
-        sudo mkdir -p "$install_dir"
-        if sudo tar -xf /tmp/nodejs.tar.xz -C "$install_dir" --strip-components=1 2>/dev/null; then
-            # Add to PATH
-            echo 'export PATH=/opt/nodejs/bin:$PATH' | sudo tee /etc/profile.d/nodejs.sh > /dev/null
-            export PATH=/opt/nodejs/bin:$PATH
+    echo -e "${GREEN}2) MySQL${NC} - Traditional choice"
+    echo -e "   ${BLUE}What you get:${NC}"
+    echo -e "   • Industry standard database"
+    echo -e "   • Wider community support and documentation"
+    echo -e "   • Oracle backing and enterprise features"
+    echo -e "   • Better for enterprise applications"
+    echo ""
 
-            # Create symlinks
-            sudo ln -sf /opt/nodejs/bin/node /usr/local/bin/node 2>/dev/null || true
-            sudo ln -sf /opt/nodejs/bin/npm /usr/local/bin/npm 2>/dev/null || true
+    echo -e "${GREEN}3) Skip Database${NC} - Install later or use SQLite"
+    echo -e "   ${BLUE}What this means:${NC}"
+    echo -e "   • Laravel projects can use SQLite (file-based database)"
+    echo -e "   • You can install a database server later manually"
+    echo -e "   • Some PHP applications might not work without a database server"
+    echo ""
 
-            echo -e "${GREEN}✅ Node.js installed manually${NC}"
-            rm -f /tmp/nodejs.tar.xz
+    local default_choice=1
+    echo -e "${YELLOW}💡 For DigitalOcean droplets and most web projects, MariaDB is recommended${NC}"
+
+    while true; do
+        read -p "Select database server [1-3] (default: 1): " db_choice
+        db_choice=${db_choice:-$default_choice}
+
+        case $db_choice in
+            1)
+                echo -e "\n${BLUE}Selected: MariaDB${NC}"
+                install_mariadb
+                return $?
+                ;;
+            2)
+                echo -e "\n${BLUE}Selected: MySQL${NC}"
+                install_mysql
+                return $?
+                ;;
+            3)
+                echo -e "\n${BLUE}Selected: Skip Database Installation${NC}"
+                echo -e "${YELLOW}⚠️  No database server will be installed${NC}"
+                echo -e "${BLUE}💡 You can install one later with:${NC}"
+                echo -e "   • MariaDB: sudo apt install mariadb-server"
+                echo -e "   • MySQL: sudo apt install mysql-server"
+                echo -e "   • Or re-run: sudo site-manager setup"
+                return 0
+                ;;
+            *)
+                echo -e "${RED}❌ Invalid choice. Please select 1, 2, or 3${NC}"
+                continue
+                ;;
+        esac
+    done
+}
+
+# Enhanced Node.js installation with version selection and multiple fallback methods
+install_nodejs() {
+    echo -e "\n${YELLOW}Node.js Installation${NC}"
+
+    if command -v node &>/dev/null; then
+        local current_version=$(node -v 2>/dev/null)
+        echo -e "${GREEN}✅ Node.js is already installed: $current_version${NC}"
+        read -p "Skip Node.js installation? [Y/n] " skip_nodejs
+        if [[ ! "$skip_nodejs" =~ ^[Nn]$ ]]; then
+            echo -e "${GREEN}✅ Using existing Node.js installation${NC}"
             return 0
         fi
     fi
 
-    echo -e "${RED}❌ All Node.js installation methods failed${NC}"
-    echo -e "${YELLOW}💡 You can install Node.js manually later:${NC}"
-    echo "   • Visit: https://nodejs.org/"
-    echo "   • Or try: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash"
+    # Node.js version selection
+    echo -e "${BLUE}Choose Node.js version to install:${NC}"
+    echo ""
+    echo -e "${GREEN}1) Node.js 20 LTS${NC} ${YELLOW}(Recommended)${NC} - Current Long Term Support"
+    echo -e "   ${BLUE}What you get:${NC}"
+    echo -e "   • Stable and well-tested release"
+    echo -e "   • Best for production applications"
+    echo -e "   • Extended support until April 2026"
+    echo -e "   • Compatible with most npm packages"
+    echo ""
 
-    read -p "Continue without Node.js? [y/N] " skip_nodejs
-    if [[ "$skip_nodejs" =~ ^[Yy]$ ]]; then
-        echo -e "${YELLOW}⚠️  Skipping Node.js installation${NC}"
+    echo -e "${GREEN}2) Node.js 22${NC} - Current Active Release"
+    echo -e "   ${BLUE}What you get:${NC}"
+    echo -e "   • Latest features and improvements"
+    echo -e "   • Better performance"
+    echo -e "   • Good for development and testing"
+    echo ""
+
+    echo -e "${GREEN}3) Node.js 18 LTS${NC} - Previous LTS"
+    echo -e "   ${BLUE}What you get:${NC}"
+    echo -e "   • Stable and mature"
+    echo -e "   • Good compatibility with older projects"
+    echo -e "   • Supported until April 2025"
+    echo ""
+
+    echo -e "${GREEN}4) System Package${NC} - Use distribution default"
+    echo -e "   ${BLUE}What you get:${NC}"
+    echo -e "   • Quick installation via apt"
+    echo -e "   • May be older version"
+    echo -e "   • Good for basic needs"
+    echo ""
+
+    local default_choice=1
+    echo -e "${YELLOW}💡 For most projects and DigitalOcean droplets, Node.js 20 LTS is recommended${NC}"
+
+    local node_version=""
+    local node_major=""
+
+    while true; do
+        read -p "Select Node.js version [1-4] (default: 1): " version_choice
+        version_choice=${version_choice:-$default_choice}
+
+        case $version_choice in
+            1)
+                echo -e "\n${BLUE}Selected: Node.js 20 LTS${NC}"
+                node_version="20"
+                node_major="20"
+                break
+                ;;
+            2)
+                echo -e "\n${BLUE}Selected: Node.js 22${NC}"
+                node_version="22"
+                node_major="22"
+                break
+                ;;
+            3)
+                echo -e "\n${BLUE}Selected: Node.js 18 LTS${NC}"
+                node_version="18"
+                node_major="18"
+                break
+                ;;
+            4)
+                echo -e "\n${BLUE}Selected: System Package${NC}"
+                node_version="system"
+                break
+                ;;
+            *)
+                echo -e "${RED}❌ Invalid choice. Please select 1, 2, 3, or 4${NC}"
+                continue
+                ;;
+        esac
+    done
+
+    # Install Node.js based on selection
+    local nodejs_installed=false
+    local install_attempts=0
+    local max_install_attempts=4
+
+    while [ $install_attempts -lt $max_install_attempts ] && [ "$nodejs_installed" = false ]; do
+        install_attempts=$((install_attempts + 1))
+        echo -e "\n${YELLOW}Node.js installation attempt $install_attempts/$max_install_attempts...${NC}"
+
+        case $install_attempts in
+            1)
+                # Method 1: NodeSource repository (for specific versions)
+                if [ "$node_version" != "system" ]; then
+                    echo "Installing Node.js $node_version via NodeSource repository..."
+                    local setup_url="https://deb.nodesource.com/setup_${node_major}.x"
+
+                    if timeout 60 curl -fsSL "$setup_url" 2>/dev/null | sudo -E bash - >/dev/null 2>&1; then
+                        if sudo apt-get install -y nodejs 2>/dev/null; then
+                            nodejs_installed=true
+                            echo -e "${GREEN}✅ Node.js $node_version installed via NodeSource repository${NC}"
+                        fi
+                    fi
+                else
+                    # System package installation
+                    echo "Installing Node.js via system package manager..."
+                    if sudo apt-get install -y nodejs npm 2>/dev/null; then
+                        nodejs_installed=true
+                        echo -e "${GREEN}✅ Node.js installed via system package manager${NC}"
+                    fi
+                fi
+                ;;
+            2)
+                # Method 2: Alternative repository setup (retry with different approach)
+                if [ "$node_version" != "system" ]; then
+                    echo "Trying alternative NodeSource setup..."
+
+                    # Clean previous attempts
+                    sudo rm -f /etc/apt/sources.list.d/nodesource.list 2>/dev/null
+                    sudo apt-get update >/dev/null 2>&1
+
+                    # Manual repository setup
+                    if curl -fsSL https://deb.nodesource.com/gpgkey/nodesource.gpg.key 2>/dev/null | sudo apt-key add - >/dev/null 2>&1; then
+                        echo "deb https://deb.nodesource.com/node_${node_major}.x $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/nodesource.list > /dev/null
+                        if sudo apt-get update >/dev/null 2>&1 && sudo apt-get install -y nodejs 2>/dev/null; then
+                            nodejs_installed=true
+                            echo -e "${GREEN}✅ Node.js $node_version installed via manual repository setup${NC}"
+                        fi
+                    fi
+                else
+                    # Retry system packages with npm separately
+                    echo "Retrying system packages with separate npm installation..."
+                    if sudo apt-get install -y nodejs 2>/dev/null && sudo apt-get install -y npm 2>/dev/null; then
+                        nodejs_installed=true
+                        echo -e "${GREEN}✅ Node.js installed via system packages (separate install)${NC}"
+                    fi
+                fi
+                ;;
+            3)
+                # Method 3: Snap package (if available)
+                if command -v snap &>/dev/null; then
+                    echo "Trying Snap package installation..."
+                    local snap_channel="latest/stable"
+
+                    # Use specific channel for LTS versions
+                    if [ "$node_version" = "20" ]; then
+                        snap_channel="20/stable"
+                    elif [ "$node_version" = "18" ]; then
+                        snap_channel="18/stable"
+                    fi
+
+                    if sudo snap install node --classic --channel="$snap_channel" 2>/dev/null; then
+                        nodejs_installed=true
+                        echo -e "${GREEN}✅ Node.js installed via Snap${NC}"
+                    fi
+                else
+                    echo "Snap not available, trying manual installation..."
+                    # Method 3b: Manual binary installation
+                    install_nodejs_manual "$node_version"
+                    if [ $? -eq 0 ]; then
+                        nodejs_installed=true
+                    fi
+                fi
+                ;;
+            4)
+                # Method 4: Manual binary installation as final fallback
+                echo "Trying manual binary installation..."
+                install_nodejs_manual "$node_version"
+                if [ $? -eq 0 ]; then
+                    nodejs_installed=true
+                fi
+                ;;
+        esac
+
+        # Check installation success and version
+        if [ "$nodejs_installed" = true ]; then
+            if command -v node &>/dev/null; then
+                local installed_version=$(node -v 2>/dev/null)
+                echo -e "${GREEN}✅ Node.js installation verified: $installed_version${NC}"
+
+                # Check npm availability
+                if command -v npm &>/dev/null; then
+                    local npm_version=$(npm -v 2>/dev/null)
+                    echo -e "${GREEN}✅ npm is available: v$npm_version${NC}"
+                else
+                    echo -e "${YELLOW}⚠️  npm not found, installing separately...${NC}"
+                    if sudo apt-get install -y npm 2>/dev/null || curl -L https://www.npmjs.com/install.sh 2>/dev/null | sudo sh; then
+                        echo -e "${GREEN}✅ npm installed successfully${NC}"
+                    else
+                        echo -e "${YELLOW}⚠️  npm installation failed, you may need to install it manually${NC}"
+                    fi
+                fi
+                break
+            else
+                echo -e "${YELLOW}⚠️  Node.js installation reported success but command not found${NC}"
+                nodejs_installed=false
+            fi
+        fi
+
+        if [ "$nodejs_installed" = false ] && [ $install_attempts -lt $max_install_attempts ]; then
+            echo "Waiting 10 seconds before next attempt..."
+            sleep 10
+        fi
+    done
+
+    if [ "$nodejs_installed" = false ]; then
+        echo -e "${RED}❌ Failed to install Node.js after $max_install_attempts attempts${NC}"
+        echo -e "\n${YELLOW}💡 Manual installation options:${NC}"
+        echo "   • Visit: https://nodejs.org/en/download/"
+        echo "   • Use Node Version Manager: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash"
+        echo "   • Try: sudo apt update && sudo apt install nodejs npm"
+        echo "   • Download binary: https://nodejs.org/dist/latest/node-*-linux-x64.tar.xz"
+
+        read -p "Continue without Node.js? [y/N] " skip_nodejs
+        if [[ "$skip_nodejs" =~ ^[Yy]$ ]]; then
+            echo -e "${YELLOW}⚠️  Skipping Node.js installation${NC}"
+            return 0
+        else
+            return 1
+        fi
+    fi
+
+    # Final verification and PATH setup
+    if command -v node &>/dev/null; then
+        local final_version=$(node -v 2>/dev/null)
+        local final_npm_version=$(npm -v 2>/dev/null || echo "not found")
+
+        echo -e "\n${BLUE}💡 Node.js Installation Summary:${NC}"
+        echo -e "  • Node.js: $final_version"
+        echo -e "  • npm: $final_npm_version"
+        echo -e "  • Installation location: $(which node)"
+
+        # Check if global npm packages directory is in PATH
+        local npm_global_path
+        if command -v npm &>/dev/null; then
+            npm_global_path=$(npm config get prefix 2>/dev/null)/bin
+            if [ -n "$npm_global_path" ] && ! echo "$PATH" | grep -q "$npm_global_path"; then
+                echo -e "\n${YELLOW}⚠️  Global npm packages directory not in PATH${NC}"
+                echo -e "${BLUE}💡 Add this to your shell config: export PATH=\"\$PATH:$npm_global_path\"${NC}"
+            fi
+        fi
+
+        echo -e "\n${GREEN}✅ Node.js installation completed successfully!${NC}"
         return 0
     else
+        echo -e "${RED}❌ Node.js installation verification failed${NC}"
+        return 1
+    fi
+}
+
+# Helper function for manual Node.js installation
+install_nodejs_manual() {
+    local version=$1
+
+    # Determine download URL based on version
+    local download_url
+    local node_dir_name
+
+    case $version in
+        "20")
+            download_url="https://nodejs.org/dist/latest-v20.x/node-v20.17.0-linux-x64.tar.xz"
+            node_dir_name="node-v20.17.0-linux-x64"
+            ;;
+        "22")
+            download_url="https://nodejs.org/dist/latest-v22.x/node-v22.8.0-linux-x64.tar.xz"
+            node_dir_name="node-v22.8.0-linux-x64"
+            ;;
+        "18")
+            download_url="https://nodejs.org/dist/latest-v18.x/node-v18.20.4-linux-x64.tar.xz"
+            node_dir_name="node-v18.20.4-linux-x64"
+            ;;
+        *)
+            # Default to Node.js 20 LTS
+            download_url="https://nodejs.org/dist/latest-v20.x/node-v20.17.0-linux-x64.tar.xz"
+            node_dir_name="node-v20.17.0-linux-x64"
+            ;;
+    esac
+
+    local install_dir="/opt/nodejs"
+
+    echo "Downloading Node.js binary from: $download_url"
+
+    if timeout 120 curl -fsSL "$download_url" -o /tmp/nodejs.tar.xz 2>/dev/null; then
+        echo "Extracting Node.js..."
+        sudo mkdir -p "$install_dir"
+
+        if sudo tar -xf /tmp/nodejs.tar.xz -C /tmp/ 2>/dev/null; then
+            # Move extracted files to install directory
+            sudo cp -r "/tmp/$node_dir_name/"* "$install_dir/" 2>/dev/null
+
+            # Create symlinks
+            sudo ln -sf "$install_dir/bin/node" /usr/local/bin/node 2>/dev/null
+            sudo ln -sf "$install_dir/bin/npm" /usr/local/bin/npm 2>/dev/null
+            sudo ln -sf "$install_dir/bin/npx" /usr/local/bin/npx 2>/dev/null
+
+            # Add to PATH for current session
+            export PATH="$install_dir/bin:$PATH"
+
+            # Create profile script for system-wide PATH
+            echo "export PATH=\"$install_dir/bin:\$PATH\"" | sudo tee /etc/profile.d/nodejs.sh > /dev/null
+            sudo chmod +x /etc/profile.d/nodejs.sh
+
+            # Cleanup
+            rm -f /tmp/nodejs.tar.xz
+            sudo rm -rf "/tmp/$node_dir_name"
+
+            echo -e "${GREEN}✅ Node.js installed manually to $install_dir${NC}"
+            return 0
+        else
+            echo -e "${RED}❌ Failed to extract Node.js archive${NC}"
+            rm -f /tmp/nodejs.tar.xz
+            return 1
+        fi
+    else
+        echo -e "${RED}❌ Failed to download Node.js${NC}"
         return 1
     fi
 }
@@ -376,9 +885,9 @@ check_tool() {
         esac
 
         if [ -n "$version" ]; then
-            echo -e "${GREEN}✔️ $tool $version${NC}"
+            echo -e "${GREEN}✅ $tool $version${NC}"
         else
-            echo -e "${GREEN}✔️ $tool (version unknown)${NC}"
+            echo -e "${GREEN}✅ $tool (version unknown)${NC}"
         fi
         return 0
     else
@@ -407,7 +916,20 @@ setup_server() {
     # Check system resources and create swap if needed
     ensure_swap
 
+    # Check if system has enough free space
+    local free_space_gb=$(df / | awk 'NR==2 {printf "%.1f", $4/1024/1024}')
+    echo -e "${BLUE}Available disk space: ${free_space_gb}GB${NC}"
+
+    if (( $(echo "$free_space_gb < 2.0" | bc -l) )); then
+        echo -e "${YELLOW}⚠️  Warning: Low disk space detected. Some installations may fail.${NC}"
+        read -p "Continue anyway? [y/N] " continue_setup
+        if [[ ! "$continue_setup" =~ ^[Yy]$ ]]; then
+            return 1
+        fi
+    fi
+
     # PHP Version Selection using select (enter the option number)
+    echo -e "\n${YELLOW}Please select PHP version to install:${NC}"
     PS3="Select PHP version (enter the option number): "
     select chosen in 8.4 8.3 8.2 8.1; do
         if [ -n "$chosen" ]; then
@@ -421,19 +943,87 @@ setup_server() {
 
     echo -e "\n${BLUE}Selected PHP version: $php_version${NC}"
 
-    # Update package list
+    # Update package list with retry mechanism
     echo -e "\n${YELLOW}Updating package list...${NC}"
-    sudo apt-get update
+    local update_attempts=0
+    local max_update_attempts=3
+    local update_success=false
 
-    # Nginx
-    if ! command -v nginx &>/dev/null; then
-        echo -e "\n${YELLOW}Installing Nginx...${NC}"
-        if sudo apt-get install -y nginx; then
-            sudo systemctl enable nginx
-            sudo systemctl start nginx
-            echo -e "${GREEN}✅ Nginx installed successfully${NC}"
+    while [ $update_attempts -lt $max_update_attempts ] && [ "$update_success" = false ]; do
+        update_attempts=$((update_attempts + 1))
+        echo "Package update attempt $update_attempts/$max_update_attempts..."
+
+        if sudo apt-get update; then
+            update_success=true
+            echo -e "${GREEN}✅ Package list updated successfully${NC}"
         else
-            echo -e "${RED}❌ Failed to install Nginx${NC}"
+            echo -e "${RED}❌ Package update attempt $update_attempts failed${NC}"
+            if [ $update_attempts -lt $max_update_attempts ]; then
+                echo "Waiting 10 seconds before retry..."
+                sleep 10
+            fi
+        fi
+    done
+
+    if [ "$update_success" = false ]; then
+        echo -e "${RED}❌ Failed to update package list after $max_update_attempts attempts${NC}"
+        read -p "Continue with potentially outdated package list? [y/N] " continue_outdated
+        if [[ ! "$continue_outdated" =~ ^[Yy]$ ]]; then
+            return 1
+        fi
+    fi
+
+    # Install essential packages first
+    echo -e "\n${YELLOW}Installing essential packages...${NC}"
+    if sudo apt-get install -y curl wget gnupg2 software-properties-common apt-transport-https ca-certificates lsb-release; then
+        echo -e "${GREEN}✅ Essential packages installed${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Some essential packages failed to install, continuing...${NC}"
+    fi
+
+    # Add PHP repository for better version availability
+    echo -e "\n${YELLOW}Adding PHP repository...${NC}"
+    if ! grep -q "ondrej/php" /etc/apt/sources.list.d/* 2>/dev/null; then
+        if curl -fsSL https://packages.sury.org/php/apt.gpg 2>/dev/null | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/php.gpg && \
+           echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/php.list > /dev/null && \
+           sudo apt-get update; then
+            echo -e "${GREEN}✅ PHP repository added successfully${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Failed to add PHP repository, using system packages${NC}"
+        fi
+    else
+        echo -e "${GREEN}✅ PHP repository already configured${NC}"
+    fi
+
+    # Nginx installation with fallback
+    echo -e "\n${YELLOW}Installing Nginx...${NC}"
+    if ! command -v nginx &>/dev/null; then
+        local nginx_installed=false
+        local nginx_attempts=0
+        local max_nginx_attempts=2
+
+        while [ $nginx_attempts -lt $max_nginx_attempts ] && [ "$nginx_installed" = false ]; do
+            nginx_attempts=$((nginx_attempts + 1))
+            echo "Nginx installation attempt $nginx_attempts/$max_nginx_attempts..."
+
+            if sudo apt-get install -y nginx; then
+                nginx_installed=true
+                sudo systemctl enable nginx
+                sudo systemctl start nginx
+                echo -e "${GREEN}✅ Nginx installed and started successfully${NC}"
+            else
+                echo -e "${RED}❌ Nginx installation attempt $nginx_attempts failed${NC}"
+                if [ $nginx_attempts -lt $max_nginx_attempts ]; then
+                    echo "Cleaning package cache and retrying..."
+                    sudo apt-get clean
+                    sudo apt-get update
+                    sleep 5
+                fi
+            fi
+        done
+
+        if [ "$nginx_installed" = false ]; then
+            echo -e "${RED}❌ Failed to install Nginx after $max_nginx_attempts attempts${NC}"
             read -p "Continue without Nginx? [y/N] " skip_nginx
             if [[ ! "$skip_nginx" =~ ^[Yy]$ ]]; then
                 return 1
@@ -482,117 +1072,208 @@ setup_server() {
         # Enable UFW if it's not already active
         if sudo ufw status | grep -q "Status: inactive"; then
             echo -e "\n${YELLOW}Enabling UFW firewall...${NC}"
-            echo -e "${BLUE}This will activate the firewall with the configured rules${NC}"
-
             read -p "Enable UFW firewall now? [Y/n] " enable_ufw
             if [[ ! "$enable_ufw" =~ ^[Nn]$ ]]; then
-                # Enable UFW
                 sudo ufw --force enable
-                echo -e "${GREEN}✅ UFW firewall is now active and enabled on system startup${NC}"
-
-                # Show final status
-                echo -e "\n${BLUE}Final UFW status:${NC}"
-                sudo ufw status verbose
+                echo -e "${GREEN}✅ UFW firewall is now active${NC}"
             else
                 echo -e "${YELLOW}⚠️  UFW rules configured but firewall remains inactive${NC}"
-                echo -e "${BLUE}You can enable it later with: sudo ufw enable${NC}"
             fi
         else
             echo -e "${GREEN}✅ UFW firewall is already active${NC}"
-            echo -e "\n${BLUE}Updated UFW status:${NC}"
-            sudo ufw status verbose
         fi
-
-        echo -e "\n${BLUE}💡 Firewall Configuration Summary:${NC}"
-        echo -e "  • SSH (port 22): ${GREEN}Allowed${NC} - Remote access"
-        echo -e "  • HTTP (port 80): ${GREEN}Allowed${NC} - Web traffic"
-        echo -e "  • HTTPS (port 443): ${GREEN}Allowed${NC} - Secure web traffic"
-        echo -e "\n${YELLOW}💡 UFW Management Commands:${NC}"
-        echo -e "  • Check status: sudo ufw status"
-        echo -e "  • Enable firewall: sudo ufw enable"
-        echo -e "  • Disable firewall: sudo ufw disable"
-        echo -e "  • Add custom rule: sudo ufw allow [port/service]"
-        echo -e "  • Remove rule: sudo ufw delete allow [port/service]"
     fi
 
-    # PHP
+    # Enhanced PHP installation with multiple retry strategies
     echo -e "\n${YELLOW}Installing PHP $php_version and extensions...${NC}"
-    if sudo apt-get install -y \
-        php$php_version-fpm \
-        php$php_version-common \
-        php$php_version-mysql \
-        php$php_version-xml \
-        php$php_version-curl \
-        php$php_version-gd \
-        php$php_version-imagick \
-        php$php_version-cli \
-        php$php_version-dev \
-        php$php_version-imap \
-        php$php_version-mbstring \
-        php$php_version-opcache \
-        php$php_version-soap \
-        php$php_version-zip \
-        php$php_version-sqlite3 \
-        php$php_version-bcmath \
-        php$php_version-intl 2>/dev/null; then
+    local php_packages=(
+        "php$php_version-fpm"
+        "php$php_version-common"
+        "php$php_version-mysql"
+        "php$php_version-xml"
+        "php$php_version-curl"
+        "php$php_version-gd"
+        "php$php_version-cli"
+        "php$php_version-dev"
+        "php$php_version-imap"
+        "php$php_version-mbstring"
+        "php$php_version-opcache"
+        "php$php_version-soap"
+        "php$php_version-zip"
+        "php$php_version-sqlite3"
+        "php$php_version-bcmath"
+        "php$php_version-intl"
+    )
 
-        sudo systemctl enable php$php_version-fpm
-        sudo systemctl start php$php_version-fpm
-        echo -e "${GREEN}✅ PHP $php_version installed successfully${NC}"
+    # Try to install PHP packages with multiple strategies
+    local php_install_success=false
+    local php_attempts=0
+    local max_php_attempts=3
+
+    while [ $php_attempts -lt $max_php_attempts ] && [ "$php_install_success" = false ]; do
+        php_attempts=$((php_attempts + 1))
+        echo -e "${YELLOW}PHP installation attempt $php_attempts/$max_php_attempts...${NC}"
+
+        # Strategy 1: Install all packages at once
+        if [ $php_attempts -eq 1 ]; then
+            echo "Installing all PHP packages together..."
+            if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${php_packages[@]}" 2>/dev/null; then
+                php_install_success=true
+            fi
+        fi
+
+        # Strategy 2: Install core packages first, then extensions
+        if [ $php_attempts -eq 2 ] && [ "$php_install_success" = false ]; then
+            echo "Installing PHP core packages first..."
+            local core_packages=("php$php_version-fpm" "php$php_version-common" "php$php_version-cli")
+            if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${core_packages[@]}" 2>/dev/null; then
+                echo "Installing PHP extensions..."
+                local extension_packages=("php$php_version-mysql" "php$php_version-xml" "php$php_version-curl" "php$php_version-gd" "php$php_version-mbstring" "php$php_version-opcache" "php$php_version-zip" "php$php_version-sqlite3" "php$php_version-bcmath" "php$php_version-intl")
+                if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${extension_packages[@]}" 2>/dev/null; then
+                    php_install_success=true
+                else
+                    echo -e "${YELLOW}⚠️  Core PHP installed but some extensions failed${NC}"
+                    php_install_success=true  # Accept partial success
+                fi
+            fi
+        fi
+
+        # Strategy 3: Install minimal PHP setup
+        if [ $php_attempts -eq 3 ] && [ "$php_install_success" = false ]; then
+            echo "Installing minimal PHP setup..."
+            local minimal_packages=("php$php_version-fpm" "php$php_version-cli" "php$php_version-mysql" "php$php_version-curl" "php$php_version-mbstring")
+            if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${minimal_packages[@]}" 2>/dev/null; then
+                php_install_success=true
+                echo -e "${YELLOW}⚠️  Minimal PHP installation completed${NC}"
+            fi
+        fi
+
+        if [ "$php_install_success" = false ] && [ $php_attempts -lt $max_php_attempts ]; then
+            echo "Cleaning package cache and waiting before retry..."
+            sudo apt-get clean
+            sudo apt-get autoclean
+            sleep 10
+        fi
+    done
+
+    if [ "$php_install_success" = true ]; then
+        # Start and enable PHP-FPM
+        if sudo systemctl enable php$php_version-fpm && sudo systemctl start php$php_version-fpm; then
+            echo -e "${GREEN}✅ PHP $php_version installed and started successfully${NC}"
+        else
+            echo -e "${YELLOW}⚠️  PHP installed but service failed to start${NC}"
+            echo "Attempting to fix PHP-FPM configuration..."
+
+            # Check for common PHP-FPM issues
+            local php_fpm_config="/etc/php/$php_version/fpm/pool.d/www.conf"
+            if [ -f "$php_fpm_config" ]; then
+                # Ensure proper user/group settings
+                sudo sed -i 's/^user = .*/user = www-data/' "$php_fpm_config"
+                sudo sed -i 's/^group = .*/group = www-data/' "$php_fpm_config"
+
+                # Retry starting the service
+                if sudo systemctl start php$php_version-fpm; then
+                    echo -e "${GREEN}✅ PHP-FPM service started after configuration fix${NC}"
+                else
+                    echo -e "${YELLOW}⚠️  PHP-FPM service still not starting, continuing anyway${NC}"
+                fi
+            fi
+        fi
     else
-        echo -e "${RED}❌ Failed to install PHP $php_version${NC}"
+        echo -e "${RED}❌ Failed to install PHP $php_version after $max_php_attempts attempts${NC}"
+        echo -e "\n${YELLOW}💡 Alternative options:${NC}"
+        echo "   • Try a different PHP version (8.1, 8.2, 8.3)"
+        echo "   • Install PHP manually later: sudo apt install php-fpm php-mysql"
+        echo "   • Skip PHP for now (sites won't work without PHP)"
+
         read -p "Continue without PHP? [y/N] " skip_php
         if [[ ! "$skip_php" =~ ^[Yy]$ ]]; then
             return 1
         fi
     fi
 
-    # MySQL with enhanced error handling
-    install_mysql
+    # Enhanced database installation with selection
+    install_database
 
-    # Node.js with multiple fallback methods
+    # Enhanced Node.js installation
     install_nodejs
 
-    # Composer installation with improved error handling
+    # Enhanced Composer installation with multiple methods
+    echo -e "\n${YELLOW}Installing Composer...${NC}"
     if ! command -v composer &>/dev/null; then
-        echo -e "\n${YELLOW}Installing Composer...${NC}"
-
-        # Download and install Composer with retries
         local composer_installed=false
-        local attempts=0
-        local max_attempts=3
+        local composer_attempts=0
+        local max_composer_attempts=4
 
-        while [ $attempts -lt $max_attempts ] && [ "$composer_installed" = false ]; do
-            attempts=$((attempts + 1))
-            echo -e "${YELLOW}Composer installation attempt $attempts/$max_attempts...${NC}"
+        while [ $composer_attempts -lt $max_composer_attempts ] && [ "$composer_installed" = false ]; do
+            composer_attempts=$((composer_attempts + 1))
+            echo -e "${YELLOW}Composer installation attempt $composer_attempts/$max_composer_attempts...${NC}"
 
-            if curl -sS https://getcomposer.org/installer 2>/dev/null | php -- --install-dir=/tmp --filename=composer 2>/dev/null; then
-                if sudo mv /tmp/composer /usr/local/bin/composer && sudo chmod +x /usr/local/bin/composer; then
-                    composer_installed=true
-                    echo -e "${GREEN}✅ Composer installed successfully${NC}"
-                else
-                    echo -e "${YELLOW}Failed to move Composer to final location${NC}"
-                fi
-            else
-                echo -e "${YELLOW}Failed to download Composer installer${NC}"
-            fi
+            case $composer_attempts in
+                1)
+                    # Method 1: Official installer via curl
+                    echo "Trying official Composer installer..."
+                    if timeout 60 curl -sS https://getcomposer.org/installer 2>/dev/null | php -- --install-dir=/tmp --filename=composer 2>/dev/null; then
+                        if sudo mv /tmp/composer /usr/local/bin/composer && sudo chmod +x /usr/local/bin/composer; then
+                            composer_installed=true
+                            echo -e "${GREEN}✅ Composer installed via official installer${NC}"
+                        fi
+                    fi
+                    ;;
+                2)
+                    # Method 2: Download specific version directly
+                    echo "Trying direct download method..."
+                    if timeout 60 wget -q -O /tmp/composer.phar https://github.com/composer/composer/releases/latest/download/composer.phar 2>/dev/null; then
+                        if sudo mv /tmp/composer.phar /usr/local/bin/composer && sudo chmod +x /usr/local/bin/composer; then
+                            composer_installed=true
+                            echo -e "${GREEN}✅ Composer installed via direct download${NC}"
+                        fi
+                    fi
+                    ;;
+                3)
+                    # Method 3: Package manager
+                    echo "Trying package manager installation..."
+                    if sudo apt-get install -y composer 2>/dev/null; then
+                        composer_installed=true
+                        echo -e "${GREEN}✅ Composer installed via package manager${NC}"
+                    fi
+                    ;;
+                4)
+                    # Method 4: Snap package
+                    if command -v snap &>/dev/null; then
+                        echo "Trying Snap package..."
+                        if sudo snap install composer --classic 2>/dev/null; then
+                            composer_installed=true
+                            echo -e "${GREEN}✅ Composer installed via Snap${NC}"
+                        fi
+                    fi
+                    ;;
+            esac
 
-            if [ "$composer_installed" = false ] && [ $attempts -lt $max_attempts ]; then
-                echo "Waiting 10 seconds before retry..."
+            if [ "$composer_installed" = false ] && [ $composer_attempts -lt $max_composer_attempts ]; then
+                echo "Waiting 10 seconds before next attempt..."
                 sleep 10
             fi
         done
 
         if [ "$composer_installed" = false ]; then
-            echo -e "${RED}❌ Failed to install Composer${NC}"
-            echo -e "${YELLOW}💡 You can install Composer manually later:${NC}"
+            echo -e "${RED}❌ Failed to install Composer after $max_composer_attempts${NC}"
+            echo -e "\n${YELLOW}💡 Manual installation options:${NC}"
             echo "   • Visit: https://getcomposer.org/download/"
+            echo "   • Run: php -r \"copy('https://getcomposer.org/installer', 'composer-setup.php');\""
+            echo "   • Then: php composer-setup.php --install-dir=/usr/local/bin --filename=composer"
 
             read -p "Continue without Composer? [y/N] " skip_composer
             if [[ ! "$skip_composer" =~ ^[Yy]$ ]]; then
                 return 1
             fi
         else
+            # Verify Composer installation
+            if command -v composer &>/dev/null; then
+                local composer_version=$(composer --version 2>/dev/null | head -1)
+                echo -e "${GREEN}✅ Composer verification: $composer_version${NC}"
+            fi
+
             # Check if /usr/local/bin is in PATH
             if ! echo "$PATH" | grep -q "/usr/local/bin"; then
                 echo -e "\n${YELLOW}⚠️  /usr/local/bin is not in your PATH${NC}"
@@ -710,7 +1391,7 @@ setup_server() {
 
     echo -e "\n${YELLOW}💡 Next Steps:${NC}"
     echo -e "  1. Run: source ~/.bashrc (or restart your terminal)"
-    echo -e "  2. Check installation: site-manager check"
+    echo -e "  2. Check installation: sudo site-manager check"
     echo -e "  3. Create your first site: sudo site-manager"
     echo -e "  4. Select option 1 (Create New Project)"
 
@@ -718,6 +1399,7 @@ setup_server() {
     echo -e "  • You can retry: sudo site-manager setup"
     echo -e "  • Or install manually later"
     echo -e "  • Check system resources and add more memory if needed"
+    echo -e "  • For Laravel projects, SQLite can be used instead of MySQL"
 }
 
 configure_existing_project() {
@@ -1039,7 +1721,7 @@ move_project() {
     # Get domain name with validation
     while true; do
         read -p "Enter domain name: " domain
-        if [ -z "$domain" ] || [ "$domain" = "exit" ]; then
+        if ( [ -z "$domain" ] || [ "$domain" = "exit" ] ); then
             echo -e "${RED}Error: Please enter a valid domain name (not empty or 'exit')${NC}"
             continue
         fi
@@ -1728,43 +2410,43 @@ setup_ssl() {
 
     echo -e "${YELLOW}Setting up SSL Certificate${NC}"
 
-    # Validate domain parameter
+    # Get domain if not provided - show list of available domains
     if [ -z "$domain" ]; then
-        echo -e "${RED}❌ Domain name is required${NC}"
-        return 1
-    fi
+        echo -e "\n${BLUE}Available domains:${NC}"
 
-    # Check if nginx config exists for this domain
-    local nginx_config="/etc/nginx/sites-available/$domain"
-    if [ ! -f "$nginx_config" ]; then
-        echo -e "${RED}❌ Nginx configuration not found for domain: $domain${NC}"
-        echo -e "${YELLOW}💡 Please create the site first using site-manager${NC}"
-        return 1
-    fi
+        # Collect all domains from nginx configs
+        local count=1
+        local domains=()
+        local has_domains=false
 
-    # Check if nginx config is enabled
-    if [ ! -L "/etc/nginx/sites-enabled/$domain" ]; then
-        echo -e "${YELLOW}⚠️  Nginx site is not enabled. Enabling now...${NC}"
-        sudo ln -sf "$nginx_config" "/etc/nginx/sites-enabled/$domain"
-        sudo nginx -t && sudo systemctl reload nginx
-    fi
+        if [ -d "/etc/nginx/sites-available" ]; then
+            for config_file in /etc/nginx/sites-available/*; do
+                if [ -f "$config_file" ] && [ "$(basename "$config_file")" != "default" ]; then
+                    local domain_name=$(basename "$config_file")
+                    domains[count]="$domain_name"
 
-    # Detect if this is a local development domain
-    local is_local_domain=false
-    if [[ "$domain" =~ \.(test|local|dev)$ ]] || [[ "$domain" =~ ^localhost ]]; then
-        is_local_domain=true
-    fi
+                    # Check SSL status for display
+                    local ssl_status="HTTP only"
+                    local ssl_color="${YELLOW}"
 
-    if [ "$is_local_domain" = true ]; then
-        echo -e "\n${BLUE}🔍 Local development domain detected: $domain${NC}"
-        echo -e "${YELLOW}Since this is a local domain (.test/.local/.dev), Let's Encrypt cannot issue certificates.${NC}"
-        echo -e "${GREEN}I'll create a self-signed certificate for local HTTPS development.${NC}"
-        echo ""
-        echo -e "${BLUE}Self-signed certificates provide:${NC}"
-        echo "  ✅ Full HTTPS functionality for local development"
-        echo "  ✅ Same behavior as Laravel Valet"
-        echo "  ✅ Testing SSL/TLS features locally"
-        echo "  ⚠️  Browser security warning (can be ignored for local dev)"
+                    # Check if SSL is already configured
+                    if grep -q "listen 443" "$config_file" || grep -q "ssl_certificate" "$config_file"; then
+                        ssl_status="HTTPS enabled"
+                        ssl_color="${GREEN}"
+                    fi
+
+                    echo -e "  $count) $domain_name ${ssl_color}($ssl_status)${NC}"
+                    ((count++))
+                    has_domains=true
+                fi
+            done
+        fi
+
+        if [ "$has_domains" = false ]; then
+            echo -e "${RED}❌ No domains found${NC}"
+            echo -e "${YELLOW}💡 Create a site first using: sudo site-manager${NC}"
+            return 1
+        fi
         echo ""
 
         read -p "Create self-signed SSL certificate for $domain? [Y/n] " create_selfsigned
@@ -1858,7 +2540,7 @@ setup_ssl() {
 
         # Reload nginx to ensure new config is active
         if sudo systemctl reload nginx; then
-            echo -e "${GREEN}✅ Nginx reloaded with SSL configuration${NC}"
+            echo -e "${GREEN}✅ Nginx reloaded successfully${NC}"
         else
             echo -e "${YELLOW}⚠️  Warning: Failed to reload Nginx${NC}"
         fi
@@ -2096,10 +2778,13 @@ update_ssl() {
     # Get domain if not provided
     if [ -z "$domain" ]; then
         echo -e "\n${BLUE}Available domains with SSL certificates:${NC}"
-        if [ -d "/etc/letsencrypt/live" ]; then
-            local count=1
-            local domains=()
 
+        local count=1
+        local domains=()
+        local has_ssl_domains=false
+
+        # Check Let's Encrypt certificates
+        if [ -d "/etc/letsencrypt/live" ]; then
             for cert_dir in /etc/letsencrypt/live/*; do
                 if [ -d "$cert_dir" ] && [ "$(basename "$cert_dir")" != "README" ]; then
                     local domain_name=$(basename "$cert_dir")
@@ -2112,36 +2797,103 @@ update_ssl() {
                         local days_left=$(( ($(date -d "$expiry_date" +%s) - $(date +%s)) / 86400 ))
 
                         if [ $days_left -lt 30 ]; then
-                            echo "  $count) $domain_name ${RED}(expires in $days_left days)${NC}"
+                            echo "  $count) $domain_name ${RED}(Let's Encrypt - expires in $days_left days)${NC}"
                         elif [ $days_left -lt 60 ]; then
-                            echo "  $count) $domain_name ${YELLOW}(expires in $days_left days)${NC}"
+                            echo "  $count) $domain_name ${YELLOW}(Let's Encrypt - expires in $days_left days)${NC}"
                         else
-                            echo "  $count) $domain_name ${GREEN}(expires in $days_left days)${NC}"
+                            echo "  $count) $domain_name ${GREEN}(Let's Encrypt - expires in $days_left days)${NC}"
                         fi
                     else
-                        echo "  $count) $domain_name (unable to check expiry)"
+                        echo "  $count) $domain_name ${YELLOW}(Let's Encrypt - unable to check expiry)${NC}"
                     fi
                     ((count++))
+                    has_ssl_domains=true
                 fi
             done
-
-            if [ ${#domains[@]} -eq 0 ]; then
-                echo -e "${RED}❌ No SSL certificates found${NC}"
-                return 1
-            fi
-
-            echo -e "\n${YELLOW}Select a domain or enter domain name:${NC}"
-            read -p "Enter domain number (1-$((count-1))) or domain name: " selection
-
-            # Check if selection is a number
-            if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -lt "$count" ]; then
-                domain="${domains[$selection]}"
-            else
-                domain="$selection"
-            fi
-        else
-            read -p "Enter domain name: " domain
         fi
+
+        # Check self-signed certificates
+        if [ -d "/etc/ssl/site-manager" ]; then
+            for cert_file in /etc/ssl/site-manager/*.crt; do
+                if [ -f "$cert_file" ]; then
+                    local domain_name=$(basename "$cert_file" .crt)
+
+                    # Check if this domain is already listed (Let's Encrypt takes precedence)
+                    local already_listed=false
+                    for i in "${!domains[@]}"; do
+                        if [ "${domains[$i]}" = "$domain_name" ]; then
+                            already_listed=true
+                            break
+                        fi
+                    done
+
+                    # If not already listed, add it
+                    if [ "$already_listed" = false ]; then
+                        domains[count]="$domain_name"
+
+                        local expiry_date=$(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2)
+                        local days_left=$(( ($(date -d "$expiry_date" +%s) - $(date +%s)) / 86400 ))
+
+                        if [ $days_left -lt 0 ]; then
+                            echo "  $count) $domain_name ${RED}(Self-signed - EXPIRED)${NC}"
+                        elif [ $days_left -lt 365 ]; then
+                            echo "  $count) $domain_name ${YELLOW}(Self-signed - expires in $days_left days)${NC}"
+                        else
+                            echo "  $count) $domain_name ${GREEN}(Self-signed - expires in $days_left days)${NC}"
+                        fi
+                        ((count++))
+                        has_ssl_domains=true
+                    fi
+                fi
+            done
+        fi
+
+        # Check Nginx configurations for SSL-enabled domains without certificates
+        if [ -d "/etc/nginx/sites-available" ]; then
+            for config_file in /etc/nginx/sites-available/*; do
+                if [ -f "$config_file" ] && [ "$(basename "$config_file")" != "default" ]; then
+                    local domain_name=$(basename "$config_file")
+
+                    # Check if this domain has SSL configured in nginx but no certificate found yet
+                    if grep -q "listen 443" "$config_file" || grep -q "ssl_certificate" "$config_file"; then
+                        # Check if this domain is already listed
+                        local already_listed=false
+                        for i in "${!domains[@]}"; do
+                            if [ "${domains[$i]}" = "$domain_name" ]; then
+                                already_listed=true
+                                break
+                            fi
+                        done
+
+                        # If not already listed, add it with a warning
+                        if [ "$already_listed" = false ]; then
+                            domains[count]="$domain_name"
+                            echo "  $count) $domain_name ${YELLOW}(SSL configured but certificate missing)${NC}"
+                            ((count++))
+                            has_ssl_domains=true
+                        fi
+                    fi
+                fi
+            done
+        fi
+
+        if [ "$has_ssl_domains" = false ]; then
+            echo -e "${RED}❌ No SSL certificates found${NC}"
+            echo -e "${YELLOW}💡 To set up SSL for a domain, use: sudo site-manager ssl <domain>${NC}"
+            return 1
+        fi
+
+        echo -e "\n${YELLOW}Select a domain or enter domain name:${NC}"
+        read -p "Enter domain number (1-$((count-1))) or domain name: " selection
+
+        # Check if selection is a number
+        if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -lt "$count" ]; then
+            domain="${domains[$selection]}"
+        else
+            domain="$selection"
+        fi
+    else
+        read -p "Enter domain name: " domain
     fi
 
     # Validate domain
@@ -2422,42 +3174,171 @@ remove_ssl() {
     # Get domain if not provided
     if [ -z "$domain" ]; then
         echo -e "\n${BLUE}Available domains with SSL certificates:${NC}"
-        if [ -d "/etc/letsencrypt/live" ]; then
-            local count=1
-            local domains=()
 
+        local count=1
+        local domains=()
+        local has_ssl_domains=false
+
+        # Check all nginx configurations for SSL-enabled domains
+        if [ -d "/etc/nginx/sites-available" ]; then
+            for config_file in /etc/nginx/sites-available/*; do
+                if [ -f "$config_file" ] && [ "$(basename "$config_file")" != "default" ]; then
+                    local domain_name=$(basename "$config_file")
+
+                    # Check if this domain has SSL configured in nginx
+                    if grep -q "listen 443" "$config_file" || grep -q "ssl_certificate" "$config_file"; then
+                        domains[count]="$domain_name"
+
+                        # Determine SSL type for display
+                        local ssl_type=""
+                        local ssl_color="${GREEN}"
+
+                        # Check for Let's Encrypt certificate
+                        if [ -d "/etc/letsencrypt/live/$domain_name" ] && [ -f "/etc/letsencrypt/live/$domain_name/cert.pem" ]; then
+                            local cert_file="/etc/letsencrypt/live/$domain_name/cert.pem"
+                            local days_left=$(( ($(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2 | xargs -I {} date -d "{}" +%s) - $(date +%s)) / 86400 ))
+
+                            if [ $days_left -lt 0 ]; then
+                                ssl_type="Let's Encrypt - ${RED}EXPIRED${ssl_color}"
+                                ssl_color="${RED}"
+                            elif [ $days_left -lt 30 ]; then
+                                ssl_type="Let's Encrypt - ${YELLOW}Expires in $days_left days${ssl_color}"
+                                ssl_color="${YELLOW}"
+                            else
+                                ssl_type="Let's Encrypt - Valid for $days_left days"
+                            fi
+                        # Check for self-signed certificate
+                        elif [ -f "/etc/ssl/site-manager/$domain_name.crt" ]; then
+                            local cert_file="/etc/ssl/site-manager/$domain_name.crt"
+                            local days_left=$(( ($(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2 | xargs -I {} date -d "{}" +%s) - $(date +%s)) / 86400 ))
+
+                            if [ $days_left -lt 0 ]; then
+                                ssl_status="Self-signed - ${RED}EXPIRED${GREEN}"
+                                ssl_color="${RED}"
+                            else
+                                ssl_status="Self-signed - Valid for $days_left days"
+                            fi
+                        # SSL configured but certificate file missing
+                        else
+                            ssl_type="SSL enabled but certificate missing"
+                            ssl_color="${YELLOW}"
+                        fi
+
+                        echo -e "  $count) $domain_name ${ssl_color}($ssl_type)${NC}"
+                        ((count++))
+                        has_ssl_domains=true
+                    fi
+                fi
+            done
+        fi
+
+        # Also check for Let's Encrypt certificates that might not be in nginx configs
+        if [ -d "/etc/letsencrypt/live" ]; then
             for cert_dir in /etc/letsencrypt/live/*; do
                 if [ -d "$cert_dir" ] && [ "$(basename "$cert_dir")" != "README" ]; then
                     local domain_name=$(basename "$cert_dir")
-                    domains[count]="$domain_name"
 
-                    # Check if nginx config has SSL enabled
-                    local nginx_config="/etc/nginx/sites-available/$domain_name"
-                    if [ -f "$nginx_config" ] && grep -q "listen 443" "$nginx_config"; then
-                        echo "  $count) $domain_name ${GREEN}(SSL enabled in Nginx)${NC}"
-                    else
-                        echo "  $count) $domain_name ${YELLOW}(SSL certificate exists but not in Nginx)${NC}"
+                    # Check if this domain is already in our list
+                    local already_listed=false
+                    for i in "${!domains[@]}"; do
+                        if [ "${domains[$i]}" = "$domain_name" ]; then
+                            already_listed=true
+                            break
+                        fi
+                    done
+
+                    # If not already listed, add it
+                    if [ "$already_listed" = false ]; then
+                        domains[count]="$domain_name"
+
+                        local cert_file="$cert_dir/cert.pem"
+                        if [ -f "$cert_file" ]; then
+                            local days_left=$(( ($(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2 | xargs -I {} date -d "{}" +%s) - $(date +%s)) / 86400 ))
+
+                            local ssl_color="${GREEN}"
+                            local ssl_status=""
+
+                            if [ $days_left -lt 0 ]; then
+                                ssl_status="Let's Encrypt - ${RED}EXPIRED${GREEN}"
+                                ssl_color="${RED}"
+                            elif [ $days_left -lt 30 ]; then
+                                ssl_status="Let's Encrypt - ${YELLOW}Expires in $days_left days${GREEN}"
+                                ssl_color="${YELLOW}"
+                            else
+                                ssl_status="Let's Encrypt - Valid, not in Nginx"
+                                ssl_color="${YELLOW}"
+                            fi
+
+                            echo -e "  $count) $domain_name ${ssl_color}($ssl_status)${NC}"
+                        else
+                            echo -e "  $count) $domain_name ${YELLOW}(Let's Encrypt - Certificate missing)${NC}"
+                        fi
+
+                        ((count++))
+                        has_ssl_domains=true
                     fi
-                    ((count++))
                 fi
             done
+        fi
 
-            if [ ${#domains[@]} -eq 0 ]; then
-                echo -e "${RED}❌ No SSL certificates found${NC}"
-                return 1
-            fi
+        # Check for standalone self-signed certificates
+        if [ -d "/etc/ssl/site-manager" ]; then
+            for cert_file in /etc/ssl/site-manager/*.crt; do
+                if [ -f "$cert_file" ]; then
+                    local domain_name=$(basename "$cert_file" .crt)
 
-            echo -e "\n${YELLOW}Select a domain or enter domain name:${NC}"
-            read -p "Enter domain number (1-$((count-1))) or domain name: " selection
+                    # Check if this domain is already in our list
+                    local already_listed=false
+                    for i in "${!domains[@]}"; do
+                        if [ "${domains[$i]}" = "$domain_name" ]; then
+                            already_listed=true
+                            break
+                        fi
+                    done
 
-            # Check if selection is a number
-            if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -lt "$count" ]; then
-                domain="${domains[$selection]}"
-            else
-                domain="$selection"
-            fi
+                    # If not already listed, add it
+                    if [ "$already_listed" = false ]; then
+                        domains[count]="$domain_name"
+
+                        local days_left=$(( ($(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2 | xargs -I {} date -d "{}" +%s) - $(date +%s)) / 86400 ))
+
+                        local ssl_color="${GREEN}"
+                        local ssl_status=""
+
+                        if [ $days_left -lt 0 ]; then
+                            ssl_status="Self-signed - ${RED}EXPIRED${GREEN}"
+                            ssl_color="${RED}"
+                        else
+                            ssl_status="Self-signed - Not in Nginx"
+                            ssl_color="${YELLOW}"
+                        fi
+
+                        echo -e "  $count) $domain_name ${ssl_color}($ssl_status)${NC}"
+                        ((count++))
+                        has_ssl_domains=true
+                    fi
+                fi
+            done
+        fi
+
+        if [ "$has_ssl_domains" = false ]; then
+            echo -e "${RED}❌ No SSL certificates found${NC}"
+            echo -e "${YELLOW}💡 SSL certificates can be found in:${NC}"
+            echo -e "   • Let's Encrypt: /etc/letsencrypt/live/"
+            echo -e "   • Self-signed: /etc/ssl/site-manager/"
+            echo -e "   • Nginx configurations: /etc/nginx/sites-available/"
+            echo -e "\n${BLUE}To set up SSL for a domain, use: sudo site-manager ssl <domain>${NC}"
+            return 1
+        fi
+
+        echo -e "\n${YELLOW}Select a domain or enter domain name:${NC}"
+        read -p "Enter domain number (1-$((count-1))) or domain name: " selection
+
+        # Check if selection is a number
+        if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -lt "$count" ]; then
+            domain="${domains[$selection]}"
         else
-            read -p "Enter domain name: " domain
+            domain="$selection"
         fi
     fi
 
@@ -2631,149 +3512,6 @@ remove_ssl() {
     echo -e "\n${YELLOW}💡 To re-enable SSL later:${NC}"
     echo -e "  • Run: sudo site-manager ssl $domain"
     echo -e "  • Or use the SSL setup option in main menu"
-}
-
-disable_ssl_nginx() {
-    local domain=$1
-    local nginx_config="/etc/nginx/sites-available/$domain"
-
-    echo "Backing up current Nginx configuration..."
-    if ! sudo cp "$nginx_config" "$nginx_config.ssl-backup.$(date +%Y%m%d_%H%M%S)"; then
-        echo -e "${RED}❌ Failed to create backup${NC}"
-        return 1
-    fi
-    echo -e "${GREEN}✅ Backup created${NC}"
-
-    # Get document root from existing config
-    local document_root=$(grep -m1 "root " "$nginx_config" | awk '{print $2}' | tr -d ';')
-
-    if [ -z "$document_root" ]; then
-        echo -e "${RED}❌ Could not determine document root from existing config${NC}"
-        return 1
-    fi
-
-    echo "Creating HTTP-only Nginx configuration..."
-
-    # Create new HTTP-only configuration
-    cat << EOF | sudo tee "$nginx_config" > /dev/null
-server {
-    listen 80;
-    server_name ${domain};
-    root ${document_root};
-
-    add_header X-Frame-Options "SAMEORIGIN";
-    add_header X-XSS-Protection "1; mode=block";
-    add_header X-Content-Type-Options "nosniff";
-
-    index index.html index.htm index.php;
-
-    charset utf-8;
-
-    location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
-    }
-
-    location = /favicon.ico { access_log off; log_not_found off; }
-    location = /robots.txt  { access_log off; log_not_found off; }
-
-    error_page 404 /index.php;
-
-    location ~ \.php$ {
-        fastcgi_pass unix:/var/run/php/php$(get_php_version)-fpm.sock;
-        fastcgi_index index.php;
-        fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
-        include fastcgi_params;
-    }
-
-    location ~ /\.(?!well-known).* {
-        deny all;
-    }
-
-    access_log /var/log/nginx/${domain}-access.log;
-    error_log /var/log/nginx/${domain}-error.log;
-}
-EOF
-
-    # Test nginx configuration
-    echo "Testing Nginx configuration..."
-    if sudo nginx -t; then
-        echo -e "${GREEN}✅ Nginx configuration is valid${NC}"
-
-        # Reload nginx
-        if sudo systemctl reload nginx; then
-            echo -e "${GREEN}✅ Nginx reloaded successfully${NC}"
-            echo -e "${GREEN}✅ SSL disabled in Nginx - site now serves HTTP only${NC}"
-        else
-            echo -e "${RED}❌ Failed to reload Nginx${NC}"
-            return 1
-        fi
-    else
-        echo -e "${RED}❌ Nginx configuration test failed${NC}"
-        echo "Restoring backup configuration..."
-        sudo cp "$nginx_config.ssl-backup.$(date +%Y%m%d_%H%M%S)" "$nginx_config"
-        return 1
-    fi
-}
-
-remove_letsencrypt_certificate() {
-    local domain=$1
-
-    echo -e "${RED}⚠️  WARNING: This will permanently delete the SSL certificate!${NC}"
-    echo -e "${YELLOW}The following will be removed:${NC}"
-    echo "  • Certificate files in /etc/letsencrypt/live/$domain/"
-    echo "  • Certificate from auto-renewal system"
-    echo "  • All certificate history and backups"
-    echo ""
-    echo -e "${RED}This action cannot be undone!${NC}"
-    echo -e "${BLUE}You will need to recreate the certificate if you want SSL again.${NC}"
-
-    read -p "Are you absolutely sure you want to delete the certificate? [y/N] " confirm_delete
-
-    if [[ ! "$confirm_delete" =~ ^[Yy]$ ]]; then
-        echo "Certificate deletion cancelled."
-        return 0
-    fi
-
-    # Also disable SSL in nginx if still enabled
-    local nginx_config="/etc/nginx/sites-available/$domain"
-    if [ -f "$nginx_config" ] && grep -q "listen 443" "$nginx_config"; then
-        echo "Removing SSL from Nginx configuration first..."
-        disable_ssl_nginx "$domain"
-    fi
-
-    echo "Deleting Let's Encrypt certificate..."
-
-    # Use certbot to delete the certificate properly
-    if sudo certbot delete --cert-name "$domain" --non-interactive 2>/dev/null; then
-        echo -e "${GREEN}✅ Certificate deleted via certbot${NC}"
-    else
-        echo -e "${YELLOW}⚠️  Certbot deletion failed, trying manual removal...${NC}"
-
-        # Manual removal as fallback
-        local letsencrypt_dirs=(
-            "/etc/letsencrypt/live/$domain"
-            "/etc/letsencrypt/archive/$domain"
-            "/etc/letsencrypt/renewal/$domain.conf"
-        )
-
-        for dir in "${letsencrypt_dirs[@]}"; do
-            if [ -e "$dir" ]; then
-                echo "Removing: $dir"
-                sudo rm -rf "$dir"
-            fi
-        done
-
-        echo -e "${GREEN}✅ Certificate files removed manually${NC}"
-    fi
-
-    # Remove from crontab if present (though usually not needed for user installations)
-    if crontab -l 2>/dev/null | grep -q "certbot.*$domain"; then
-        echo "Removing certificate from cron jobs..."
-        (crontab -l 2>/dev/null | grep -v "certbot.*$domain") | crontab -
-        echo -e "${GREEN}✅ Removed from scheduled renewals${NC}"
-    fi
-
-    echo -e "${GREEN}✅ Let's Encrypt certificate completely removed${NC}"
 }
 
 fix_permissions() {
@@ -3180,14 +3918,15 @@ check_ssl_status() {
             return 1
         fi
 
-        echo -e "\n${YELLOW}Select a domain or enter domain name:${NC}"
-        read -p "Enter domain number (1-$((count-1))) or domain name: " selection
+        echo -e "\n${YELLOW}Select a domain:${NC}"
+        read -p "Enter domain number (1-$((count-1))): " selection
 
         # Check if selection is a number
         if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -lt "$count" ]; then
             domain="${domains[$selection]}"
         else
-            domain="$selection"
+            echo -e "${RED}❌ Invalid selection. Please enter a number between 1 and $((count-1))${NC}"
+            return 1
         fi
     fi
 
