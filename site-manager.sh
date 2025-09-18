@@ -2540,7 +2540,7 @@ setup_ssl() {
 
         # Reload nginx to ensure new config is active
         if sudo systemctl reload nginx; then
-            echo -e "${GREEN}✅ Nginx reloaded with SSL configuration${NC}"
+            echo -e "${GREEN}✅ Nginx reloaded successfully${NC}"
         else
             echo -e "${YELLOW}⚠️  Warning: Failed to reload Nginx${NC}"
         fi
@@ -3104,42 +3104,171 @@ remove_ssl() {
     # Get domain if not provided
     if [ -z "$domain" ]; then
         echo -e "\n${BLUE}Available domains with SSL certificates:${NC}"
-        if [ -d "/etc/letsencrypt/live" ]; then
-            local count=1
-            local domains=()
 
+        local count=1
+        local domains=()
+        local has_ssl_domains=false
+
+        # Check all nginx configurations for SSL-enabled domains
+        if [ -d "/etc/nginx/sites-available" ]; then
+            for config_file in /etc/nginx/sites-available/*; do
+                if [ -f "$config_file" ] && [ "$(basename "$config_file")" != "default" ]; then
+                    local domain_name=$(basename "$config_file")
+
+                    # Check if this domain has SSL configured in nginx
+                    if grep -q "listen 443" "$config_file" || grep -q "ssl_certificate" "$config_file"; then
+                        domains[count]="$domain_name"
+
+                        # Determine SSL type for display
+                        local ssl_type=""
+                        local ssl_color="${GREEN}"
+
+                        # Check for Let's Encrypt certificate
+                        if [ -d "/etc/letsencrypt/live/$domain_name" ] && [ -f "/etc/letsencrypt/live/$domain_name/cert.pem" ]; then
+                            local cert_file="/etc/letsencrypt/live/$domain_name/cert.pem"
+                            local days_left=$(( ($(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2 | xargs -I {} date -d "{}" +%s) - $(date +%s)) / 86400 ))
+
+                            if [ $days_left -lt 0 ]; then
+                                ssl_type="Let's Encrypt - ${RED}EXPIRED${ssl_color}"
+                                ssl_color="${RED}"
+                            elif [ $days_left -lt 30 ]; then
+                                ssl_type="Let's Encrypt - ${YELLOW}Expires in $days_left days${ssl_color}"
+                                ssl_color="${YELLOW}"
+                            else
+                                ssl_type="Let's Encrypt - Valid for $days_left days"
+                            fi
+                        # Check for self-signed certificate
+                        elif [ -f "/etc/ssl/site-manager/$domain_name.crt" ]; then
+                            local cert_file="/etc/ssl/site-manager/$domain_name.crt"
+                            local days_left=$(( ($(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2 | xargs -I {} date -d "{}" +%s) - $(date +%s)) / 86400 ))
+
+                            if [ $days_left -lt 0 ]; then
+                                ssl_type="Self-signed - ${RED}EXPIRED${ssl_color}"
+                                ssl_color="${RED}"
+                            else
+                                ssl_type="Self-signed - Valid for $days_left days"
+                            fi
+                        # SSL configured but certificate file missing
+                        else
+                            ssl_type="SSL enabled but certificate missing"
+                            ssl_color="${YELLOW}"
+                        fi
+
+                        echo -e "  $count) $domain_name ${ssl_color}($ssl_type)${NC}"
+                        ((count++))
+                        has_ssl_domains=true
+                    fi
+                fi
+            done
+        fi
+
+        # Also check for Let's Encrypt certificates that might not be in nginx configs
+        if [ -d "/etc/letsencrypt/live" ]; then
             for cert_dir in /etc/letsencrypt/live/*; do
                 if [ -d "$cert_dir" ] && [ "$(basename "$cert_dir")" != "README" ]; then
                     local domain_name=$(basename "$cert_dir")
-                    domains[count]="$domain_name"
 
-                    # Check if nginx config has SSL enabled
-                    local nginx_config="/etc/nginx/sites-available/$domain_name"
-                    if [ -f "$nginx_config" ] && grep -q "listen 443" "$nginx_config"; then
-                        echo "  $count) $domain_name ${GREEN}(SSL enabled in Nginx)${NC}"
-                    else
-                        echo "  $count) $domain_name ${YELLOW}(SSL certificate exists but not in Nginx)${NC}"
+                    # Check if this domain is already in our list
+                    local already_listed=false
+                    for i in "${!domains[@]}"; do
+                        if [ "${domains[$i]}" = "$domain_name" ]; then
+                            already_listed=true
+                            break
+                        fi
+                    done
+
+                    # If not already listed, add it
+                    if [ "$already_listed" = false ]; then
+                        domains[count]="$domain_name"
+
+                        local cert_file="$cert_dir/cert.pem"
+                        if [ -f "$cert_file" ]; then
+                            local days_left=$(( ($(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2 | xargs -I {} date -d "{}" +%s) - $(date +%s)) / 86400 ))
+
+                            local ssl_color="${GREEN}"
+                            local ssl_status=""
+
+                            if [ $days_left -lt 0 ]; then
+                                ssl_status="Let's Encrypt - ${RED}EXPIRED${GREEN}"
+                                ssl_color="${RED}"
+                            elif [ $days_left -lt 30 ]; then
+                                ssl_status="Let's Encrypt - ${YELLOW}Expires in $days_left days${GREEN}"
+                                ssl_color="${YELLOW}"
+                            else
+                                ssl_status="Let's Encrypt - Valid, not in Nginx"
+                                ssl_color="${YELLOW}"
+                            fi
+
+                            echo -e "  $count) $domain_name ${ssl_color}($ssl_status)${NC}"
+                        else
+                            echo -e "  $count) $domain_name ${YELLOW}(Let's Encrypt - Certificate missing)${NC}"
+                        fi
+
+                        ((count++))
+                        has_ssl_domains=true
                     fi
-                    ((count++))
                 fi
             done
+        fi
 
-            if [ ${#domains[@]} -eq 0 ]; then
-                echo -e "${RED}❌ No SSL certificates found${NC}"
-                return 1
-            fi
+        # Check for standalone self-signed certificates
+        if [ -d "/etc/ssl/site-manager" ]; then
+            for cert_file in /etc/ssl/site-manager/*.crt; do
+                if [ -f "$cert_file" ]; then
+                    local domain_name=$(basename "$cert_file" .crt)
 
-            echo -e "\n${YELLOW}Select a domain or enter domain name:${NC}"
-            read -p "Enter domain number (1-$((count-1))) or domain name: " selection
+                    # Check if this domain is already in our list
+                    local already_listed=false
+                    for i in "${!domains[@]}"; do
+                        if [ "${domains[$i]}" = "$domain_name" ]; then
+                            already_listed=true
+                            break
+                        fi
+                    done
 
-            # Check if selection is a number
-            if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -lt "$count" ]; then
-                domain="${domains[$selection]}"
-            else
-                domain="$selection"
-            fi
+                    # If not already listed, add it
+                    if [ "$already_listed" = false ]; then
+                        domains[count]="$domain_name"
+
+                        local days_left=$(( ($(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2 | xargs -I {} date -d "{}" +%s) - $(date +%s)) / 86400 ))
+
+                        local ssl_color="${GREEN}"
+                        local ssl_status=""
+
+                        if [ $days_left -lt 0 ]; then
+                            ssl_status="Self-signed - ${RED}EXPIRED${GREEN}"
+                            ssl_color="${RED}"
+                        else
+                            ssl_status="Self-signed - Not in Nginx"
+                            ssl_color="${YELLOW}"
+                        fi
+
+                        echo -e "  $count) $domain_name ${ssl_color}($ssl_status)${NC}"
+                        ((count++))
+                        has_ssl_domains=true
+                    fi
+                fi
+            done
+        fi
+
+        if [ "$has_ssl_domains" = false ]; then
+            echo -e "${RED}❌ No SSL certificates found${NC}"
+            echo -e "${YELLOW}💡 SSL certificates can be found in:${NC}"
+            echo -e "   • Let's Encrypt: /etc/letsencrypt/live/"
+            echo -e "   • Self-signed: /etc/ssl/site-manager/"
+            echo -e "   • Nginx configurations: /etc/nginx/sites-available/"
+            echo -e "\n${BLUE}To set up SSL for a domain, use: sudo site-manager ssl <domain>${NC}"
+            return 1
+        fi
+
+        echo -e "\n${YELLOW}Select a domain or enter domain name:${NC}"
+        read -p "Enter domain number (1-$((count-1))) or domain name: " selection
+
+        # Check if selection is a number
+        if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -lt "$count" ]; then
+            domain="${domains[$selection]}"
         else
-            read -p "Enter domain name: " domain
+            domain="$selection"
         fi
     fi
 
@@ -3313,149 +3442,6 @@ remove_ssl() {
     echo -e "\n${YELLOW}💡 To re-enable SSL later:${NC}"
     echo -e "  • Run: sudo site-manager ssl $domain"
     echo -e "  • Or use the SSL setup option in main menu"
-}
-
-disable_ssl_nginx() {
-    local domain=$1
-    local nginx_config="/etc/nginx/sites-available/$domain"
-
-    echo "Backing up current Nginx configuration..."
-    if ! sudo cp "$nginx_config" "$nginx_config.ssl-backup.$(date +%Y%m%d_%H%M%S)"; then
-        echo -e "${RED}❌ Failed to create backup${NC}"
-        return 1
-    fi
-    echo -e "${GREEN}✅ Backup created${NC}"
-
-    # Get document root from existing config
-    local document_root=$(grep -m1 "root " "$nginx_config" | awk '{print $2}' | tr -d ';')
-
-    if [ -z "$document_root" ]; then
-        echo -e "${RED}❌ Could not determine document root from existing config${NC}"
-        return 1
-    fi
-
-    echo "Creating HTTP-only Nginx configuration..."
-
-    # Create new HTTP-only configuration
-    cat << EOF | sudo tee "$nginx_config" > /dev/null
-server {
-    listen 80;
-    server_name ${domain};
-    root ${document_root};
-
-    add_header X-Frame-Options "SAMEORIGIN";
-    add_header X-XSS-Protection "1; mode=block";
-    add_header X-Content-Type-Options "nosniff";
-
-    index index.html index.htm index.php;
-
-    charset utf-8;
-
-    location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
-    }
-
-    location = /favicon.ico { access_log off; log_not_found off; }
-    location = /robots.txt  { access_log off; log_not_found off; }
-
-    error_page 404 /index.php;
-
-    location ~ \.php$ {
-        fastcgi_pass unix:/var/run/php/php$(get_php_version)-fpm.sock;
-        fastcgi_index index.php;
-        fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
-        include fastcgi_params;
-    }
-
-    location ~ /\.(?!well-known).* {
-        deny all;
-    }
-
-    access_log /var/log/nginx/${domain}-access.log;
-    error_log /var/log/nginx/${domain}-error.log;
-}
-EOF
-
-    # Test nginx configuration
-    echo "Testing Nginx configuration..."
-    if sudo nginx -t; then
-        echo -e "${GREEN}✅ Nginx configuration is valid${NC}"
-
-        # Reload nginx
-        if sudo systemctl reload nginx; then
-            echo -e "${GREEN}✅ Nginx reloaded successfully${NC}"
-            echo -e "${GREEN}✅ SSL disabled in Nginx - site now serves HTTP only${NC}"
-        else
-            echo -e "${RED}❌ Failed to reload Nginx${NC}"
-            return 1
-        fi
-    else
-        echo -e "${RED}❌ Nginx configuration test failed${NC}"
-        echo "Restoring backup configuration..."
-        sudo cp "$nginx_config.ssl-backup.$(date +%Y%m%d_%H%M%S)" "$nginx_config"
-        return 1
-    fi
-}
-
-remove_letsencrypt_certificate() {
-    local domain=$1
-
-    echo -e "${RED}⚠️  WARNING: This will permanently delete the SSL certificate!${NC}"
-    echo -e "${YELLOW}The following will be removed:${NC}"
-    echo "  • Certificate files in /etc/letsencrypt/live/$domain/"
-    echo "  • Certificate from auto-renewal system"
-    echo "  • All certificate history and backups"
-    echo ""
-    echo -e "${RED}This action cannot be undone!${NC}"
-    echo -e "${BLUE}You will need to recreate the certificate if you want SSL again.${NC}"
-
-    read -p "Are you absolutely sure you want to delete the certificate? [y/N] " confirm_delete
-
-    if [[ ! "$confirm_delete" =~ ^[Yy]$ ]]; then
-        echo "Certificate deletion cancelled."
-        return 0
-    fi
-
-    # Also disable SSL in nginx if still enabled
-    local nginx_config="/etc/nginx/sites-available/$domain"
-    if [ -f "$nginx_config" ] && grep -q "listen 443" "$nginx_config"; then
-        echo "Removing SSL from Nginx configuration first..."
-        disable_ssl_nginx "$domain"
-    fi
-
-    echo "Deleting Let's Encrypt certificate..."
-
-    # Use certbot to delete the certificate properly
-    if sudo certbot delete --cert-name "$domain" --non-interactive 2>/dev/null; then
-        echo -e "${GREEN}✅ Certificate deleted via certbot${NC}"
-    else
-        echo -e "${YELLOW}⚠️  Certbot deletion failed, trying manual removal...${NC}"
-
-        # Manual removal as fallback
-        local letsencrypt_dirs=(
-            "/etc/letsencrypt/live/$domain"
-            "/etc/letsencrypt/archive/$domain"
-            "/etc/letsencrypt/renewal/$domain.conf"
-        )
-
-        for dir in "${letsencrypt_dirs[@]}"; do
-            if [ -e "$dir" ]; then
-                echo "Removing: $dir"
-                sudo rm -rf "$dir"
-            fi
-        done
-
-        echo -e "${GREEN}✅ Certificate files removed manually${NC}"
-    fi
-
-    # Remove from crontab if present (though usually not needed for user installations)
-    if crontab -l 2>/dev/null | grep -q "certbot.*$domain"; then
-        echo "Removing certificate from cron jobs..."
-        (crontab -l 2>/dev/null | grep -v "certbot.*$domain") | crontab -
-        echo -e "${GREEN}✅ Removed from scheduled renewals${NC}"
-    fi
-
-    echo -e "${GREEN}✅ Let's Encrypt certificate completely removed${NC}"
 }
 
 fix_permissions() {
