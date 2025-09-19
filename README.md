@@ -56,13 +56,54 @@ A comprehensive solution for server administration and web project management wi
 - **SQLite Support**: Automatic SQLite database permission handling
 
 ### Installation
+
 ```bash
-# Install Site Manager
-curl -s https://api.github.com/repos/williamug/site-manager/releases/latest | grep browser_download_url | cut -d '"' -f 4 | wget -qi - && sudo chmod +x site-manager.sh && sudo mv site-manager.sh /usr/local/bin/site-manager
+# Enhanced installation with comprehensive progress indicators
+curl -fsSL https://raw.githubusercontent.com/williamug/site-manager/main/install.sh | bash
 
 # Verify installation
 site-manager check
 ```
+
+**What you'll see during installation:**
+```
+┌─────────────────────────────────────────┐
+│          Site Manager Installer        │
+└─────────────────────────────────────────┘
+
+[INFO] Checking internet connectivity...
+[✓] Internet connectivity confirmed
+[INFO] Checking required dependencies...
+[✓] All required dependencies are available
+[INFO] Fetching latest release information...
+[✓] Latest version: v3.0.0
+[INFO] Downloading Site Manager...
+Source: https://github.com/williamug/site-manager/releases/latest/download/site-manager.sh
+site-manager.sh      100%[===================>]  175K  425 KB/s    in 0.2s
+[✓] Download completed successfully
+[INFO] Verifying downloaded file...
+[✓] File verification passed (179,456 bytes)
+[INFO] Installing Site Manager to /usr/local/bin/site-manager...
+[✓] Site Manager installed successfully
+[✓] Installation verified - site-manager command is available
+
+🎉 Site Manager Installation Complete!
+
+📋 Next Steps:
+  1. Check system requirements: site-manager check
+  2. Run initial server setup: sudo site-manager setup
+  3. Start using Site Manager: sudo site-manager
+```
+
+**Features of the enhanced installer:**
+- ✅ **Updates GitHub download statistics** (downloads from GitHub Releases)
+- ✅ **Comprehensive progress indicators** with color-coded output
+- ✅ **Dependency checking** and automatic installation (curl, wget, jq)
+- ✅ **Internet connectivity verification** before starting
+- ✅ **File verification** to ensure successful download
+- ✅ **Error handling** with helpful error messages
+- ✅ **Post-installation guidance** with next steps
+- ✅ **Professional installation experience**
 
 ## Uninstallation
 ```bash
