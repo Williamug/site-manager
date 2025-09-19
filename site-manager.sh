@@ -4136,6 +4136,162 @@ check_ssl_status() {
     echo -e "  • Check All Certificates: ${GREEN}sudo site-manager check-ssl${NC}"
 }
 
+# Function to disable SSL in Nginx configuration only (keep certificates)
+disable_ssl_nginx() {
+    local domain=$1
+    local nginx_config="/etc/nginx/sites-available/$domain"
+
+    echo -e "${YELLOW}Disabling SSL in Nginx configuration for $domain...${NC}"
+
+    # Check if nginx config exists
+    if [ ! -f "$nginx_config" ]; then
+        echo -e "${RED}❌ Nginx configuration not found: $nginx_config${NC}"
+        return 1
+    fi
+
+    # Backup existing config
+    local backup_file="${nginx_config}.backup.$(date +%Y%m%d_%H%M%S)"
+    if sudo cp "$nginx_config" "$backup_file"; then
+        echo -e "${GREEN}✅ Backup created: $backup_file${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Failed to create backup${NC}"
+    fi
+
+    # Get document root from existing config
+    local document_root=$(grep -m1 "root " "$nginx_config" | awk '{print $2}' | tr -d ';')
+
+    if [ -z "$document_root" ]; then
+        echo -e "${RED}❌ Could not determine document root from existing config${NC}"
+        return 1
+    fi
+
+    echo "Document root detected: $document_root"
+
+    # Create HTTP-only Nginx configuration
+    echo "Creating HTTP-only Nginx configuration..."
+    cat << EOF | sudo tee "$nginx_config" > /dev/null
+server {
+    listen 80;
+    server_name $domain;
+    root $document_root;
+
+    add_header X-Frame-Options "SAMEORIGIN";
+    add_header X-XSS-Protection "1; mode=block";
+    add_header X-Content-Type-Options "nosniff";
+
+    index index.html index.htm index.php;
+
+    charset utf-8;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    location = /favicon.ico { access_log off; log_not_found off; }
+    location = /robots.txt  { access_log off; log_not_found off; }
+
+    error_page 404 /index.php;
+
+    location ~ \.php$ {
+        fastcgi_pass unix:/var/run/php/php$(get_php_version)-fpm.sock;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location ~ /\.(?!well-known).* {
+        deny all;
+    }
+
+    access_log /var/log/nginx/$domain-access.log;
+    error_log /var/log/nginx/$domain-error.log;
+}
+EOF
+
+    # Test nginx configuration
+    echo "Testing Nginx configuration..."
+    if sudo nginx -t; then
+        echo -e "${GREEN}✅ Nginx configuration is valid${NC}"
+
+        # Reload nginx
+        if sudo systemctl reload nginx; then
+            echo -e "${GREEN}✅ Nginx reloaded successfully${NC}"
+            echo -e "${GREEN}✅ SSL disabled in Nginx configuration${NC}"
+            echo -e "${BLUE}💡 Site is now accessible via HTTP only: http://$domain${NC}"
+        else
+            echo -e "${RED}❌ Failed to reload Nginx${NC}"
+            echo "Restoring backup configuration..."
+            sudo cp "$backup_file" "$nginx_config"
+            return 1
+        fi
+    else
+        echo -e "${RED}❌ Nginx configuration test failed${NC}"
+        echo "Restoring backup configuration..."
+        sudo cp "$backup_file" "$nginx_config"
+        return 1
+    fi
+
+    return 0
+}
+
+# Function to remove Let's Encrypt certificate completely
+remove_letsencrypt_certificate() {
+    local domain=$1
+
+    echo -e "${YELLOW}Removing Let's Encrypt certificate for $domain...${NC}"
+
+    # Check if Let's Encrypt certificate exists
+    if [ ! -d "/etc/letsencrypt/live/$domain" ]; then
+        echo -e "${YELLOW}⚠️  No Let's Encrypt certificate found for $domain${NC}"
+        return 0
+    fi
+
+    echo -e "${RED}⚠️  WARNING: This will permanently delete the Let's Encrypt certificate${NC}"
+    echo -e "${YELLOW}This action cannot be undone. You'll need to recreate the certificate later.${NC}"
+    read -p "Are you sure you want to delete the certificate? [y/N] " confirm
+
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Operation cancelled."
+        return 0
+    fi
+
+    # First disable SSL in Nginx if not already done
+    local nginx_config="/etc/nginx/sites-available/$domain"
+    if [ -f "$nginx_config" ] && (grep -q "listen 443" "$nginx_config" || grep -q "ssl_certificate" "$nginx_config"); then
+        echo "Disabling SSL in Nginx first..."
+        disable_ssl_nginx "$domain"
+    fi
+
+    # Delete the certificate using certbot
+    echo "Deleting Let's Encrypt certificate..."
+    if sudo certbot delete --cert-name "$domain" --non-interactive; then
+        echo -e "${GREEN}✅ Let's Encrypt certificate deleted successfully${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Certbot delete failed, attempting manual removal...${NC}"
+
+        # Manual removal as fallback
+        local cert_dirs=(
+            "/etc/letsencrypt/live/$domain"
+            "/etc/letsencrypt/archive/$domain"
+            "/etc/letsencrypt/renewal/$domain.conf"
+        )
+
+        for cert_path in "${cert_dirs[@]}"; do
+            if [ -e "$cert_path" ]; then
+                echo "Removing: $cert_path"
+                sudo rm -rf "$cert_path"
+            fi
+        done
+
+        echo -e "${GREEN}✅ Let's Encrypt certificate removed manually${NC}"
+    fi
+
+    echo -e "${BLUE}💡 Certificate removal completed${NC}"
+    echo -e "${YELLOW}To recreate SSL certificate later, run: sudo site-manager ssl $domain${NC}"
+
+    return 0
+}
+
 # ---------- Main Program ----------
 case "$1" in
     check)
