@@ -2,9 +2,9 @@
 
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
-![Version](https://img.shields.io/github/v/release/williamug/site-manager?style=flat-square&logo=github)
-![Downloads](https://img.shields.io/github/downloads/williamug/site-manager/total?style=flat-square&logo=github)
-![Stars](https://img.shields.io/github/stars/williamug/site-manager?style=flat-square&logo=github)
+![Version](https://img.shields.io/github/v/release/Williamug/site-manager?style=flat-square&logo=github)
+![Downloads](https://img.shields.io/github/downloads/Williamug/site-manager/total?style=flat-square&logo=github&color=brightgreen&cacheSeconds=300)
+![Stars](https://img.shields.io/github/stars/Williamug/site-manager?style=flat-square&logo=github)
 
 A comprehensive solution for server administration and web project management with advanced SSL, backup, permission management, and firewall configuration features.
 
@@ -58,8 +58,8 @@ A comprehensive solution for server administration and web project management wi
 ### Installation
 
 ```bash
-# Download and run the latest installer from GitHub Releases
-curl -fsSL https://github.com/williamug/site-manager/releases/latest/download/install.sh | bash
+# Enhanced installation with comprehensive progress indicators
+curl -fsSL https://raw.githubusercontent.com/williamug/site-manager/main/install.sh | bash
 
 # Verify installation
 site-manager check
@@ -96,7 +96,7 @@ site-manager.sh      100%[===================>]  175K  425 KB/s    in 0.2s
 ```
 
 **Features of the enhanced installer:**
-- ✅ **Counts toward GitHub download statistics** (downloads from GitHub Releases)
+- ✅ **Updates GitHub download statistics** (downloads from GitHub Releases)
 - ✅ **Comprehensive progress indicators** with color-coded output
 - ✅ **Dependency checking** and automatic installation (curl, wget, jq)
 - ✅ **Internet connectivity verification** before starting
