@@ -1,0 +1,78 @@
+# Site Manager .gitignore
+
+# Backup files
+*.backup
+*.bak
+*.orig
+*~
+
+# Temporary files
+*.tmp
+*.temp
+/tmp/
+
+# Log files
+*.log
+logs/
+
+# System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local configuration files
+.env
+.env.local
+.env.*.local
+
+# Test directories
+test/
+tests/
+testing/
+
+# Build artifacts
+build/
+dist/
+
+# Package files
+*.tar.gz
+*.zip
+*.deb
+*.rpm
+
+# Runtime files
+*.pid
+*.sock
+
+# SSL certificates (for security)
+*.key
+*.crt
+*.pem
+*.p12
+*.pfx
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Compressed files
+*.7z
+*.dmg
+*.gz
+*.iso
+*.jar
+*.rar
+*.tar
+*.zip
