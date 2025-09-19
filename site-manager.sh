@@ -2449,6 +2449,22 @@ setup_ssl() {
         fi
         echo ""
 
+        read -p "Select domain number (1-$((count-1))): " selection
+
+        # Check if selection is a number
+        if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -lt "$count" ]; then
+            domain="${domains[$selection]}"
+        else
+            echo -e "${RED}❌ Invalid selection. Please enter a number between 1 and $((count-1))${NC}"
+            return 1
+        fi
+    fi
+
+    # Check if this is a local development domain
+    if [[ "$domain" =~ \.(test|local|dev)$ ]] || [[ "$domain" =~ ^localhost ]]; then
+        echo -e "\n${BLUE}🏠 Local development domain detected: $domain${NC}"
+        echo -e "${YELLOW}Using self-signed SSL certificate (Let's Encrypt cannot be used for local domains)${NC}"
+
         read -p "Create self-signed SSL certificate for $domain? [Y/n] " create_selfsigned
         if [[ "$create_selfsigned" =~ ^[Nn]$ ]]; then
             echo "SSL setup cancelled."
