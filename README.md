@@ -2,9 +2,9 @@
 
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
-![Version](https://img.shields.io/github/v/release/williamug/site-manager?style=flat-square&logo=github)
-![Downloads](https://img.shields.io/github/downloads/williamug/site-manager/total?style=flat-square&logo=github)
-![Stars](https://img.shields.io/github/stars/williamug/site-manager?style=flat-square&logo=github)
+![Version](https://img.shields.io/github/v/release/Williamug/site-manager?style=flat-square&logo=github)
+![Downloads](https://img.shields.io/github/downloads/Williamug/site-manager/total?style=flat-square&logo=github&color=brightgreen&cacheSeconds=300)
+![Stars](https://img.shields.io/github/stars/Williamug/site-manager?style=flat-square&logo=github)
 
 A comprehensive solution for server administration and web project management with advanced SSL, backup, permission management, and firewall configuration features.
 

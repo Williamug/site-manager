@@ -256,9 +256,11 @@ main() {
     local temp_file
     temp_file=$(mktemp)
 
-    # Cleanup function
+    # Cleanup function that handles unset variables
     cleanup() {
-        rm -f "$temp_file"
+        if [ -n "${temp_file:-}" ] && [ -f "${temp_file:-}" ]; then
+            rm -f "$temp_file"
+        fi
     }
     trap cleanup EXIT
 
@@ -269,6 +271,10 @@ main() {
 
     # Show completion message
     show_post_install_info
+    
+    # Clean up manually before exit
+    cleanup
+    trap - EXIT
 }
 
 # Run main function
