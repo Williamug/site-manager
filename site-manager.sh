@@ -3729,7 +3729,9 @@ check_ssl_status() {
         fi
     fi
 
-    echo -e "  • Check All Certificates: ${GREEN}sudo site-manager check-ssl${NC}"
+    echo -e "  • Check specific domain: sudo site-manager check-ssl <domain>"
+    echo -e "  • Renew all Let's Encrypt: sudo certbot renew"
+    echo -e "  • Test renewal: sudo certbot renew --dry-run"
 }
 
 # Function to disable SSL in Nginx configuration only (keep certificates)
@@ -3886,6 +3888,381 @@ remove_letsencrypt_certificate() {
     echo -e "${YELLOW}To recreate SSL certificate later, run: sudo site-manager ssl $domain${NC}"
 
     return 0
+}
+
+# Function to check all SSL certificates status
+check_all_certificates() {
+    echo -e "${YELLOW}Checking All SSL Certificates${NC}"
+    echo "=================================================="
+
+    local found_certificates=false
+
+    # Check Let's Encrypt certificates
+    echo -e "\n${BLUE}🔒 Let's Encrypt Certificates:${NC}"
+    if [ -d "/etc/letsencrypt/live" ]; then
+        local letsencrypt_found=false
+        for cert_dir in /etc/letsencrypt/live/*; do
+            if [ -d "$cert_dir" ] && [ "$(basename "$cert_dir")" != "README" ]; then
+                local domain_name=$(basename "$cert_dir")
+                local cert_file="$cert_dir/cert.pem"
+
+                if [ -f "$cert_file" ]; then
+                    letsencrypt_found=true
+                    found_certificates=true
+
+                    local not_after=$(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2)
+                    local days_left=$(( ($(date -d "$not_after" +%s) - $(date +%s)) / 86400 ))
+
+                    echo -n "  • $domain_name: "
+                    if [ $days_left -lt 0 ]; then
+                        echo -e "${RED}❌ EXPIRED ($((0 - days_left)) days ago)${NC}"
+                    elif [ $days_left -lt 7 ]; then
+                        echo -e "${RED}⚠️  CRITICAL - Expires in $days_left days${NC}"
+                    elif [ $days_left -lt 30 ]; then
+                        echo -e "${YELLOW}⚠️  WARNING - Expires in $days_left days${NC}"
+                    else
+                        echo -e "${GREEN}✅ Valid for $days_left more days${NC}"
+                    fi
+                fi
+            fi
+        done
+
+        if [ "$letsencrypt_found" = false ]; then
+            echo -e "  ${YELLOW}No Let's Encrypt certificates found${NC}"
+        fi
+    else
+        echo -e "  ${YELLOW}Let's Encrypt directory not found${NC}"
+    fi
+
+    # Check self-signed certificates
+    echo -e "\n${BLUE}🔐 Self-Signed Certificates:${NC}"
+    if [ -d "/etc/ssl/site-manager" ]; then
+        local selfsigned_found=false
+        for cert_file in /etc/ssl/site-manager/*.crt; do
+            if [ -f "$cert_file" ]; then
+                local domain_name=$(basename "$cert_file" .crt)
+                selfsigned_found=true
+                found_certificates=true
+
+                local not_after=$(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2)
+                local days_left=$(( ($(date -d "$not_after" +%s) - $(date +%s)) / 86400 ))
+
+                echo -n "  • $domain_name: "
+                if [ $days_left -lt 0 ]; then
+                    echo -e "${RED}❌ EXPIRED ($((0 - days_left)) days ago)${NC}"
+                elif [ $days_left -lt 365 ]; then
+                    echo -e "${YELLOW}⚠️  Expires in $days_left days${NC}"
+                else
+                    echo -e "${GREEN}✅ Valid for $days_left more days${NC}"
+                fi
+            fi
+        done
+
+        if [ "$selfsigned_found" = false ]; then
+            echo -e "  ${YELLOW}No self-signed certificates found${NC}"
+        fi
+    else
+        echo -e "  ${YELLOW}Self-signed certificates directory not found${NC}"
+    fi
+
+    # Overall summary
+    echo -e "\n${YELLOW}📊 Summary:${NC}"
+    if [ "$found_certificates" = false ]; then
+        echo -e "  ${YELLOW}No SSL certificates found on this system${NC}"
+        echo -e "  ${BLUE}💡 To set up SSL for a domain: sudo site-manager ssl <domain>${NC}"
+    else
+        # Count certificates by status
+        local total_certs=0
+        local expired_certs=0
+        local expiring_soon=0
+
+        # Count Let's Encrypt certificates
+        if [ -d "/etc/letsencrypt/live" ]; then
+            for cert_dir in /etc/letsencrypt/live/*; do
+                if [ -d "$cert_dir" ] && [ "$(basename "$cert_dir")" != "README" ]; then
+                    local cert_file="$cert_dir/cert.pem"
+                    if [ -f "$cert_file" ]; then
+                        total_certs=$((total_certs + 1))
+                        local not_after=$(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2)
+                        local days_left=$(( ($(date -d "$not_after" +%s) - $(date +%s)) / 86400 ))
+
+                        if [ $days_left -lt 0 ]; then
+                            expired_certs=$((expired_certs + 1))
+                        elif [ $days_left -lt 30 ]; then
+                            expiring_soon=$((expiring_soon + 1))
+                        fi
+                    fi
+                fi
+            done
+        fi
+
+        # Count self-signed certificates
+        if [ -d "/etc/ssl/site-manager" ]; then
+            for cert_file in /etc/ssl/site-manager/*.crt; do
+                if [ -f "$cert_file" ]; then
+                    total_certs=$((total_certs + 1))
+                    local not_after=$(openssl x509 -in "$cert_file" -noout -enddate | cut -d= -f2)
+                    local days_left=$(( ($(date -d "$not_after" +%s) - $(date +%s)) / 86400 ))
+
+                    if [ $days_left -lt 0 ]; then
+                        expired_certs=$((expired_certs + 1))
+                    elif [ $days_left -lt 365 ]; then
+                        expiring_soon=$((expiring_soon + 1))
+                    fi
+                fi
+            done
+        fi
+
+        echo -e "  • Total certificates: $total_certs"
+        if [ $expired_certs -gt 0 ]; then
+            echo -e "  • ${RED}Expired certificates: $expired_certs${NC}"
+        fi
+        if [ $expiring_soon -gt 0 ]; then
+            echo -e "  • ${YELLOW}Expiring soon (< 30 days): $expiring_soon${NC}"
+        fi
+
+        local healthy_certs=$((total_certs - expired_certs - expiring_soon))
+        if [ $healthy_certs -gt 0 ]; then
+            echo -e "  • ${GREEN}Healthy certificates: $healthy_certs${NC}"
+        fi
+    fi
+
+    # Action recommendations
+    echo -e "\n${YELLOW}🛠️  Recommended Actions:${NC}"
+    if [ $expired_certs -gt 0 ]; then
+        echo -e "  • ${RED}Urgent: Renew expired certificates${NC}"
+        echo -e "    sudo site-manager update-ssl"
+    fi
+    if [ $expiring_soon -gt 0 ]; then
+        echo -e "  • ${YELLOW}Soon: Renew certificates expiring within 30 days${NC}"
+        echo -e "    sudo site-manager update-ssl"
+    fi
+
+    echo -e "  • Check specific domain: sudo site-manager check-ssl <domain>"
+    echo -e "  • Renew all Let's Encrypt: sudo certbot renew"
+    echo -e "  • Test renewal: sudo certbot renew --dry-run"
+}
+
+# Function to renew a specific certificate
+renew_certificate() {
+    local domain=$1
+
+    echo -e "${YELLOW}Renewing certificate for $domain...${NC}"
+
+    if sudo certbot renew --cert-name "$domain"; then
+        echo -e "${GREEN}✅ Certificate renewed successfully${NC}"
+
+        # Reload nginx
+        if sudo systemctl reload nginx; then
+            echo -e "${GREEN}✅ Nginx reloaded${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Warning: Failed to reload Nginx${NC}"
+        fi
+    else
+        echo -e "${RED}❌ Certificate renewal failed${NC}"
+        return 1
+    fi
+}
+
+# Function to force renew a certificate
+force_renew_certificate() {
+    local domain=$1
+
+    echo -e "${YELLOW}Force renewing certificate for $domain...${NC}"
+
+    if sudo certbot renew --cert-name "$domain" --force-renewal; then
+        echo -e "${GREEN}✅ Certificate force renewed successfully${NC}"
+
+        # Reload nginx
+        if sudo systemctl reload nginx; then
+            echo -e "${GREEN}✅ Nginx reloaded${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Warning: Failed to reload Nginx${NC}"
+        fi
+    else
+        echo -e "${RED}❌ Certificate force renewal failed${NC}"
+        return 1
+    fi
+}
+
+# Function to test certificate renewal
+test_certificate_renewal() {
+    local domain=$1
+
+    echo -e "${YELLOW}Testing certificate renewal for $domain (dry run)...${NC}"
+
+    if sudo certbot renew --cert-name "$domain" --dry-run; then
+        echo -e "${GREEN}✅ Certificate renewal test passed${NC}"
+    else
+        echo -e "${RED}❌ Certificate renewal test failed${NC}"
+        return 1
+    fi
+}
+
+# Function to expand certificate with additional domains
+expand_certificate() {
+    local domain=$1
+
+    echo -e "${YELLOW}Expanding certificate for $domain...${NC}"
+    echo -e "${BLUE}Current certificate covers: $domain${NC}"
+
+    read -p "Enter additional domains (space-separated): " additional_domains
+
+    if [ -z "$additional_domains" ]; then
+        echo -e "${YELLOW}No additional domains provided${NC}"
+        return 0
+    fi
+
+    # Build domain list
+    local all_domains="$domain"
+    for add_domain in $additional_domains; do
+        all_domains="$all_domains -d $add_domain"
+    done
+
+    echo -e "${YELLOW}Expanding certificate to cover: $all_domains${NC}"
+
+    if sudo certbot --nginx --expand -d $all_domains; then
+        echo -e "${GREEN}✅ Certificate expanded successfully${NC}"
+    else
+        echo -e "${RED}❌ Certificate expansion failed${NC}"
+        return 1
+    fi
+}
+
+# Function to remove SSL certificate
+remove_ssl() {
+    local domain=$1
+    local CURRENT_USER
+    CURRENT_USER=$(get_current_user)
+
+    echo -e "${YELLOW}Remove SSL Certificate${NC}"
+
+    # Get domain if not provided
+    if [ -z "$domain" ]; then
+        echo -e "\n${BLUE}Available domains with SSL certificates:${NC}"
+
+        local count=1
+        local domains=()
+        local has_ssl_domains=false
+
+        # Check Let's Encrypt certificates
+        if [ -d "/etc/letsencrypt/live" ]; then
+            for cert_dir in /etc/letsencrypt/live/*; do
+                if [ -d "$cert_dir" ] && [ "$(basename "$cert_dir")" != "README" ]; then
+                    local domain_name=$(basename "$cert_dir")
+                    domains[count]="$domain_name"
+                    echo "  $count) $domain_name (Let's Encrypt)"
+                    ((count++))
+                    has_ssl_domains=true
+                fi
+            done
+        fi
+
+        # Check self-signed certificates
+        if [ -d "/etc/ssl/site-manager" ]; then
+            for cert_file in /etc/ssl/site-manager/*.crt; do
+                if [ -f "$cert_file" ]; then
+                    local domain_name=$(basename "$cert_file" .crt)
+
+                    # Check if this domain is already listed (Let's Encrypt takes precedence)
+                    local already_listed=false
+                    for i in "${!domains[@]}"; do
+                        if [ "${domains[$i]}" = "$domain_name" ]; then
+                            already_listed=true
+                            break
+                        fi
+                    done
+
+                    if [ "$already_listed" = false ]; then
+                        domains[count]="$domain_name"
+                        echo "  $count) $domain_name (Self-signed)"
+                        ((count++))
+                        has_ssl_domains=true
+                    fi
+                fi
+            done
+        fi
+
+        if [ "$has_ssl_domains" = false ]; then
+            echo -e "${RED}❌ No SSL certificates found${NC}"
+            return 1
+        fi
+
+        echo -e "\n${YELLOW}Select a domain to remove SSL certificate:${NC}"
+        read -p "Enter domain number (1-$((count-1))): " selection
+
+        if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -lt "$count" ]; then
+            domain="${domains[$selection]}"
+        else
+            echo -e "${RED}❌ Invalid selection${NC}"
+            return 1
+        fi
+    fi
+
+    echo -e "\n${YELLOW}SSL Certificate Removal for: $domain${NC}"
+
+    # Check what type of certificate exists
+    local has_letsencrypt=false
+    local has_selfsigned=false
+
+    if [ -d "/etc/letsencrypt/live/$domain" ]; then
+        has_letsencrypt=true
+    fi
+
+    if [ -f "/etc/ssl/site-manager/$domain.crt" ]; then
+        has_selfsigned=true
+    fi
+
+    if [ "$has_letsencrypt" = false ] && [ "$has_selfsigned" = false ]; then
+        echo -e "${RED}❌ No SSL certificate found for $domain${NC}"
+        return 1
+    fi
+
+    # Show removal options
+    echo -e "\n${YELLOW}What would you like to remove?${NC}"
+    echo "1) Remove SSL from Nginx only (keep certificates)"
+    echo "2) Remove SSL and delete certificates completely"
+    echo "3) Cancel"
+
+    read -p "Select option [1-3]: " remove_choice
+
+    case $remove_choice in
+        1)
+            echo -e "\n${YELLOW}Removing SSL from Nginx configuration only...${NC}"
+            disable_ssl_nginx "$domain"
+            ;;
+        2)
+            echo -e "\n${YELLOW}Removing SSL and deleting certificates...${NC}"
+
+            # First disable SSL in Nginx
+            disable_ssl_nginx "$domain"
+
+            # Remove Let's Encrypt certificate if exists
+            if [ "$has_letsencrypt" = true ]; then
+                remove_letsencrypt_certificate "$domain"
+            fi
+
+            # Remove self-signed certificate if exists
+            if [ "$has_selfsigned" = true ]; then
+                echo -e "${YELLOW}Removing self-signed certificate...${NC}"
+                sudo rm -f "/etc/ssl/site-manager/$domain.crt"
+                sudo rm -f "/etc/ssl/site-manager/$domain.key"
+                sudo rm -f "/etc/ssl/site-manager/$domain.conf"
+                echo -e "${GREEN}✅ Self-signed certificate removed${NC}"
+            fi
+            ;;
+        3)
+            echo "Operation cancelled."
+            return 0
+            ;;
+        *)
+            echo -e "${RED}❌ Invalid option${NC}"
+            return 1
+            ;;
+    esac
+
+    echo -e "\n${GREEN}✅ SSL removal completed for $domain${NC}"
+    echo -e "${BLUE}💡 Your site is now accessible via HTTP only: http://$domain${NC}"
 }
 
 # ---------- Main Program ----------
