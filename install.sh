@@ -124,7 +124,9 @@ get_latest_release() {
 
     # Extract version and download URL
     LATEST_VERSION=$(echo "$api_response" | jq -r '.tag_name // "unknown"')
-    DOWNLOAD_URL=$(echo "$api_response" | jq -r '.assets[0].browser_download_url // empty')
+
+    # Look for site-manager.sh in assets, not install.sh
+    DOWNLOAD_URL=$(echo "$api_response" | jq -r '.assets[] | select(.name == "site-manager.sh") | .browser_download_url // empty')
 
     if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
         # Fallback to direct GitHub download
