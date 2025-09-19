@@ -271,7 +271,7 @@ main() {
 
     # Show completion message
     show_post_install_info
-    
+
     # Clean up manually before exit
     cleanup
     trap - EXIT
