@@ -58,8 +58,8 @@ A comprehensive solution for server administration and web project management wi
 ### Installation
 
 ```bash
-# Enhanced installation with comprehensive progress indicators
-curl -fsSL https://raw.githubusercontent.com/williamug/site-manager/main/install.sh | bash
+# Download and run the latest installer from GitHub Releases
+curl -fsSL https://github.com/williamug/site-manager/releases/latest/download/install.sh | bash
 
 # Verify installation
 site-manager check
@@ -96,7 +96,7 @@ site-manager.sh      100%[===================>]  175K  425 KB/s    in 0.2s
 ```
 
 **Features of the enhanced installer:**
-- ✅ **Updates GitHub download statistics** (downloads from GitHub Releases)
+- ✅ **Counts toward GitHub download statistics** (downloads from GitHub Releases)
 - ✅ **Comprehensive progress indicators** with color-coded output
 - ✅ **Dependency checking** and automatic installation (curl, wget, jq)
 - ✅ **Internet connectivity verification** before starting
